@@ -1,0 +1,41 @@
+# dependencies
+node_modules
+backend/node_modules
+frontend/node_modules
+
+# build output and caches
+dist
+backend/dist
+frontend/dist
+frontend/.vite
+*.tsbuildinfo
+coverage
+
+# generated code
+backend/src/generated
+
+# runtime data and backups
+backend/storage
+backups
+uploads
+
+# local secrets
+.env
+.env.*
+!.env.example
+!.env.production.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+PRODUCTION_CREDENTIALS.txt
+
+# logs and editor files
+*.log
+.DS_Store
+.idea
+.vscode
+frontend/vite.config.js
+frontend/vite.config.d.ts

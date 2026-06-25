@@ -1,0 +1,14 @@
+.git
+.env
+backend/.env
+frontend/.env
+node_modules
+backend/node_modules
+frontend/node_modules
+backend/dist
+frontend/dist
+backend/storage
+backups
+*.log
+*.tsbuildinfo
+PRODUCTION_CREDENTIALS.txt

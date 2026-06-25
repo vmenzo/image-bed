@@ -1,0 +1,109 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+        VITE_ALLOW_REGISTER: ${VITE_ALLOW_REGISTER:-true}
+    image: image-bed-frontend:local
+    container_name: image-bed-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+      VITE_ALLOW_REGISTER: ${VITE_ALLOW_REGISTER:-true}
+      HOST: 0.0.0.0
+      PORT: 7899
+      BACKEND_HOST: backend
+      BACKEND_PORT: 3000
+      ENABLE_HSTS: ${ENABLE_HSTS:-false}
+      FRAME_ANCESTORS: ${FRAME_ANCESTORS:-self}
+    ports:
+      - "7899:7899"
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:7899/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: image-bed-backend:local
+    container_name: image-bed-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-imagebed}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-imagebed}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      LOCAL_STORAGE_PATH: /app/backend/storage
+      CORS_ORIGIN: http://localhost:7899,http://127.0.0.1:7899
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-}
+      ALLOW_REGISTER: ${ALLOW_REGISTER:-true}
+      TRUST_PROXY: ${TRUST_PROXY:-loopback, linklocal, uniquelocal}
+      ENABLE_HSTS: ${ENABLE_HSTS:-false}
+      FRAME_ANCESTORS: ${FRAME_ANCESTORS:-self}
+      TOKEN_EXPIRES_IN: ${TOKEN_EXPIRES_IN:-7d}
+      PASSWORD_RESET_EXPIRES_MINUTES: ${PASSWORD_RESET_EXPIRES_MINUTES:-30}
+    expose:
+      - "3000"
+    volumes:
+      - backend_storage:/app/backend/storage
+      - ./backups:/root/image-bed/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/system/ping').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: image-bed-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-imagebed}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-imagebed}
+    expose:
+      - "5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-imagebed} -d ${POSTGRES_DB:-imagebed}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: image-bed-redis
+    restart: unless-stopped
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+  backend_storage:

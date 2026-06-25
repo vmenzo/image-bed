@@ -1,0 +1,65 @@
+import { ForbiddenException, Injectable } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { CreateAlbumDto } from './dto/create-album.dto';
+import { UpdateAlbumDto } from './dto/update-album.dto';
+
+@Injectable()
+export class AlbumsService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async list(ownerId: string) {
+    const albums = await this.prisma.album.findMany({
+      where: { ownerId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        _count: {
+          select: { images: true },
+        },
+      },
+    });
+
+    return albums.map((album) => ({
+      ...album,
+      imageCount: album._count.images,
+      _count: undefined,
+    }));
+  }
+
+  create(ownerId: string, dto: CreateAlbumDto) {
+    return this.prisma.album.create({
+      data: {
+        ownerId,
+        name: dto.name,
+        description: dto.description,
+        visibility: dto.visibility,
+      },
+    });
+  }
+
+  async update(ownerId: string, id: string, dto: UpdateAlbumDto) {
+    await this.ensureOwner(ownerId, id);
+    return this.prisma.album.update({
+      where: { id },
+      data: dto,
+    });
+  }
+
+  async remove(ownerId: string, id: string) {
+    await this.ensureOwner(ownerId, id);
+    await this.prisma.album.delete({
+      where: { id },
+    });
+    return { ok: true };
+  }
+
+  private async ensureOwner(ownerId: string, id: string) {
+    const album = await this.prisma.album.findUnique({
+      where: { id },
+      select: { ownerId: true },
+    });
+
+    if (!album || album.ownerId !== ownerId) {
+      throw new ForbiddenException('Album is not accessible');
+    }
+  }
+}

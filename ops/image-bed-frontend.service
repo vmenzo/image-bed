@@ -1,0 +1,17 @@
+[Unit]
+Description=Image Bed Frontend
+After=network.target image-bed-backend.service
+Requires=image-bed-backend.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/image-bed/frontend
+Environment=NODE_ENV=production
+Environment=HOST=0.0.0.0
+Environment=PORT=7899
+ExecStart=/usr/bin/node server.mjs
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
