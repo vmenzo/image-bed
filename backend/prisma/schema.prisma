@@ -125,7 +125,6 @@ model AppSetting {
   ownerId                String          @unique
   owner                  User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   publicBaseUrl          String?
-  appPublicUrl           String?
   storageProvider        StorageProvider @default(LOCAL)
   s3Endpoint             String?
   s3Region               String?

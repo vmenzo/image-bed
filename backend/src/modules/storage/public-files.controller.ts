@@ -9,7 +9,7 @@ import {
   Inject,
   forwardRef,
 } from '@nestjs/common';
-import { ImageStatus, Visibility } from '@prisma/client';
+import { ImageStatus, StorageProvider, Visibility } from '@prisma/client';
 import { lookup } from 'mime-types';
 import { Request, Response } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
@@ -42,7 +42,7 @@ export class PublicFilesController {
 
     const storageSetting: StorageRuntimeConfig = {
       ...setting,
-      storageProvider: image.storageProvider,
+      storageProvider: StorageProvider.LOCAL,
     };
     const stream = await this.storage.createReadStreamIfExists(
       key,
@@ -76,7 +76,6 @@ export class PublicFilesController {
         ownerId: true,
         status: true,
         visibility: true,
-        storageProvider: true,
       },
     });
 

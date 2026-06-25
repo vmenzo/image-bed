@@ -13,7 +13,6 @@ import { UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { MailService } from '../mail/mail.service';
-import { SettingsService } from '../settings/settings.service';
 import { formatUserPublicId } from '../../common/public-id';
 import { generateOpaqueToken } from '../../common/tokens';
 import { LoginDto } from './dto/login.dto';
@@ -36,7 +35,6 @@ export class AuthService {
     private readonly mail: MailService,
     private readonly audit: AuditService,
     private readonly sessions: SessionService,
-    private readonly settings: SettingsService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -217,7 +215,7 @@ export class AuthService {
       await this.mail.sendPasswordReset({
         to: user.email,
         name: user.name,
-        resetUrl: await this.buildResetUrl(request, token),
+        resetUrl: this.buildResetUrl(request, token),
         expiresMinutes,
       });
     } catch (error) {
@@ -367,12 +365,17 @@ export class AuthService {
     return createHash('sha256').update(token).digest('hex');
   }
 
-  private async buildResetUrl(request: Request, token: string) {
-    const configured = await this.settings.getAppPublicUrl();
+  private buildResetUrl(request: Request, token: string) {
+    const configured = this.config.get<string>('APP_PUBLIC_URL')?.trim();
     const baseUrl =
       configured ||
-      request.headers.origin ||
-      `${request.protocol}://${request.get('host')}`;
+      (this.config.get<string>('NODE_ENV') === 'production'
+        ? ''
+        : request.headers.origin ||
+          `${request.protocol}://${request.get('host')}`);
+    if (!baseUrl) {
+      throw new Error('APP_PUBLIC_URL is required for password reset emails');
+    }
 
     const url = new URL('/reset-password', baseUrl);
     url.searchParams.set('token', token);

@@ -5,11 +5,10 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ImageStatus, StorageProvider, Visibility } from '@prisma/client';
+import { ImageStatus, Visibility } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { UploadService } from '../upload/upload.service';
-import { StorageService } from '../storage/storage.service';
 import { formatUserPublicId } from '../../common/public-id';
 
 type TelegramUpdate = {
@@ -68,7 +67,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly settings: SettingsService,
     private readonly upload: UploadService,
-    private readonly storage: StorageService,
     private readonly config: ConfigService,
   ) {}
 
@@ -301,7 +299,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           `文件：${image.originalName}`,
           `大小：${this.formatBytes(Number(image.sizeBytes))}`,
           `可见性：${this.visibilityText(image.visibility)}`,
-          this.publicLinkLine(image, setting),
+          this.publicLinkLine(image),
         ]
           .filter(Boolean)
           .join('\n'),
@@ -311,11 +309,11 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                 [
                   {
                     text: '打开图片',
-                    url: this.imagePublicUrl(image, setting),
+                    url: this.absoluteUrl(image.publicUrl),
                   },
                   {
                     text: '分享页',
-                    url: this.shareUrl(image.id, setting),
+                    url: this.shareUrl(image.id),
                   },
                 ],
               ]
@@ -372,7 +370,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         : command === '/status'
           ? await this.statusPanel(ownerId, setting)
           : command === '/recent'
-            ? await this.recentPanel(ownerId, setting)
+            ? await this.recentPanel(ownerId)
             : command === '/albums'
               ? await this.albumsPanel(ownerId)
               : command === '/policy'
@@ -410,7 +408,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     } else if (action === 'status') {
       panel = await this.statusPanel(ownerId, setting);
     } else if (action === 'recent') {
-      panel = await this.recentPanel(ownerId, setting);
+      panel = await this.recentPanel(ownerId);
     } else if (action === 'albums') {
       panel = await this.albumsPanel(ownerId);
     } else if (action === 'policy') {
@@ -502,10 +500,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private async recentPanel(
-    ownerId: string,
-    setting: Awaited<ReturnType<SettingsService['getRuntime']>>,
-  ): Promise<TelegramPanel> {
+  private async recentPanel(ownerId: string): Promise<TelegramPanel> {
     const images = await this.prisma.image.findMany({
       where: {
         ownerId,
@@ -520,8 +515,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         sizeBytes: true,
         visibility: true,
         status: true,
-        storageKey: true,
-        storageProvider: true,
+        publicUrl: true,
         createdAt: true,
       },
     });
@@ -538,7 +532,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
                   `   ${this.statusText(image.status)} · ${this.visibilityText(
                     image.visibility,
                   )} · ${this.formatBytes(Number(image.sizeBytes))}\n` +
-                  `   ${this.publicLinkLine(image, setting)}`,
+                  `   ${this.publicLinkLine(image)}`,
               ),
             ].join('\n')
           : '最近图片\n\n暂无图片。',
@@ -549,9 +543,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           .map((image) => [
             {
               text: `打开：${image.title}`,
-              url: this.imagePublicUrl(image, setting),
+              url: this.absoluteUrl(image.publicUrl),
             },
-            { text: '分享页', url: this.shareUrl(image.id, setting) },
+            { text: '分享页', url: this.shareUrl(image.id) },
           ]),
         [{ text: '返回控制台', callback_data: 'pv:home' }],
       ],
@@ -789,23 +783,17 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     return data.result;
   }
 
-  private absoluteUrl(
-    value?: string | null,
-    setting?: Awaited<ReturnType<SettingsService['getRuntime']>>,
-  ) {
+  private absoluteUrl(value?: string | null) {
     if (!value) return '';
     try {
-      return new URL(value, this.publicAppUrl(setting)).toString();
+      return new URL(value, this.publicAppUrl()).toString();
     } catch {
       return value;
     }
   }
 
-  private shareUrl(
-    imageId: string,
-    setting?: Awaited<ReturnType<SettingsService['getRuntime']>>,
-  ) {
-    return new URL(`/s/${imageId}`, this.publicAppUrl(setting)).toString();
+  private shareUrl(imageId: string) {
+    return new URL(`/s/${imageId}`, this.publicAppUrl()).toString();
   }
 
   private isPublicReadyImage(image: {
@@ -818,17 +806,13 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private publicLinkLine(
-    image: {
-      storageKey: string;
-      storageProvider: StorageProvider;
-      visibility: Visibility;
-      status: ImageStatus;
-    },
-    setting?: Awaited<ReturnType<SettingsService['getRuntime']>>,
-  ) {
-    if (this.isPublicReadyImage(image)) {
-      return `链接：${this.imagePublicUrl(image, setting)}`;
+  private publicLinkLine(image: {
+    visibility: Visibility;
+    status: ImageStatus;
+    publicUrl?: string | null;
+  }) {
+    if (this.isPublicReadyImage(image) && image.publicUrl) {
+      return `链接：${this.absoluteUrl(image.publicUrl)}`;
     }
 
     if (image.visibility === Visibility.PRIVATE) {
@@ -838,24 +822,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     return '链接：图片处理完成后可访问';
   }
 
-  private imagePublicUrl(
-    image: { storageKey: string; storageProvider: StorageProvider },
-    setting?: Awaited<ReturnType<SettingsService['getRuntime']>>,
-  ) {
-    return this.absoluteUrl(
-      this.storage.getPublicUrlWithBase(image.storageKey, {
-        ...setting,
-        storageProvider: image.storageProvider,
-      }),
-      setting,
-    );
-  }
-
-  private publicAppUrl(
-    setting?: Awaited<ReturnType<SettingsService['getRuntime']>>,
-  ) {
+  private publicAppUrl() {
     return (
-      setting?.appPublicUrl?.trim() ||
       this.config.get<string>('APP_PUBLIC_URL')?.trim() ||
       'http://127.0.0.1:7899'
     );

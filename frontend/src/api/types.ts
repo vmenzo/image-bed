@@ -74,7 +74,6 @@ export type ApiKey = {
 export type AppSetting = {
   id: string;
   publicBaseUrl?: string | null;
-  appPublicUrl?: string | null;
   storageProvider: StorageProvider;
   s3Endpoint?: string | null;
   s3Region?: string | null;

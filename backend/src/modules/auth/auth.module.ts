@@ -6,18 +6,11 @@ import { LoginThrottleGuard } from './login-throttle.guard';
 import { PasswordResetThrottleGuard } from './password-reset-throttle.guard';
 import { AuditModule } from '../audit/audit.module';
 import { MailModule } from '../mail/mail.module';
-import { SettingsModule } from '../settings/settings.module';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { SessionModule } from './session.module';
 
 @Module({
-  imports: [
-    ConfigModule,
-    SessionModule,
-    AuditModule,
-    MailModule,
-    SettingsModule,
-  ],
+  imports: [ConfigModule, SessionModule, AuditModule, MailModule],
   controllers: [AuthController],
   providers: [
     AuthService,
