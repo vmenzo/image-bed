@@ -20,6 +20,7 @@ const testingStorage = ref(false);
 const testingEmail = ref(false);
 const albums = ref<Album[]>([]);
 const telegramConfigured = ref(false);
+const currentOrigin = window.location.origin;
 const defaultPublicBaseUrl = '';
 const localPublicBaseUrl = toAbsoluteApiUrl('/api/public/files');
 
@@ -37,6 +38,10 @@ const storage = reactive({
   defaultQuotaMb: 1024,
   allowedTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
   defaultVisibility: 'PRIVATE' as Visibility,
+});
+
+const site = reactive({
+  appPublicUrl: currentOrigin,
 });
 
 const processing = reactive({
@@ -72,10 +77,6 @@ const email = reactive({
   from: '',
   testTo: '',
 });
-const recommendedPublicBaseUrl = computed(() =>
-  storage.provider === 'LOCAL' ? localPublicBaseUrl : storage.publicBaseUrl,
-);
-
 const storageProviderLabel = computed(() =>
   storage.provider === 'LOCAL' ? '本机目录' : '第三方对象存储',
 );
@@ -123,7 +124,11 @@ async function load() {
     ]);
 
     albums.value = albumList;
-    storage.publicBaseUrl = data.publicBaseUrl ?? defaultPublicBaseUrl;
+    storage.publicBaseUrl =
+      data.publicBaseUrl ??
+      (data.storageProvider === 'LOCAL'
+        ? localPublicBaseUrl
+        : defaultPublicBaseUrl);
     storage.provider = data.storageProvider;
     storage.localStoragePath =
       data.localStoragePath || storage.localStoragePath;
@@ -146,6 +151,7 @@ async function load() {
     security.hotlinkProtection = data.hotlinkProtection;
     security.uploadAudit = data.uploadAudit;
     security.apiUpload = data.apiUpload;
+    site.appPublicUrl = data.appPublicUrl || currentOrigin;
     telegram.enabled = data.telegramBotEnabled;
     telegram.token = data.telegramBotToken || '';
     telegram.allowedChatIdsText = data.telegramAllowedChatIds.join('\n');
@@ -172,6 +178,7 @@ async function save() {
   try {
     await updateAppSettingApi({
       publicBaseUrl: storage.publicBaseUrl || null,
+      appPublicUrl: site.appPublicUrl || null,
       storageProvider: storage.provider,
       localStoragePath: storage.localStoragePath || null,
       s3Endpoint: storage.s3Endpoint || null,
@@ -250,12 +257,16 @@ onMounted(load);
 
 watch(
   () => storage.provider,
-  () => {
-    if (
-      !storage.publicBaseUrl ||
-      storage.publicBaseUrl === localPublicBaseUrl
-    ) {
-      storage.publicBaseUrl = recommendedPublicBaseUrl.value;
+  (provider) => {
+    if (provider === 'LOCAL') {
+      if (!storage.publicBaseUrl) {
+        storage.publicBaseUrl = localPublicBaseUrl;
+      }
+      return;
+    }
+
+    if (storage.publicBaseUrl === localPublicBaseUrl) {
+      storage.publicBaseUrl = '';
     }
   },
 );
@@ -304,10 +315,14 @@ watch(
             >
               <template #append>
                 <el-button
-                  :disabled="storage.provider !== 'LOCAL'"
-                  @click="storage.publicBaseUrl = recommendedPublicBaseUrl"
+                  @click="
+                    storage.publicBaseUrl =
+                      storage.provider === 'LOCAL'
+                        ? localPublicBaseUrl
+                        : currentOrigin
+                  "
                 >
-                  推荐值
+                  当前域名
                 </el-button>
               </template>
             </el-input>
@@ -468,6 +483,18 @@ watch(
                 :value="album.id"
               />
             </el-select>
+          </el-form-item>
+          <el-form-item label="站点公开域名">
+            <el-input
+              v-model="site.appPublicUrl"
+              placeholder="https://img.example.com"
+            >
+              <template #append>
+                <el-button @click="site.appPublicUrl = currentOrigin">
+                  当前域名
+                </el-button>
+              </template>
+            </el-input>
           </el-form-item>
         </el-form>
       </el-card>
