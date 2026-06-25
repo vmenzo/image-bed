@@ -93,7 +93,6 @@ export class UsersService {
     dto: UpdateUserAdminDto,
     auditContext: AuditContext,
   ) {
-    const email = dto.email?.toLowerCase().trim();
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) {
       throw new NotFoundException('User not found');
@@ -107,9 +106,9 @@ export class UsersService {
       throw new ForbiddenException('You cannot remove your own admin role');
     }
 
-    if (email && email !== user.email) {
+    if (dto.email && dto.email !== user.email) {
       const existing = await this.prisma.user.findUnique({
-        where: { email },
+        where: { email: dto.email },
         select: { id: true },
       });
       if (existing) {
@@ -120,7 +119,7 @@ export class UsersService {
     const updated = await this.prisma.user.update({
       where: { id },
       data: {
-        email,
+        email: dto.email,
         name: dto.name,
         role: dto.role,
         disabled: dto.disabled,
@@ -136,7 +135,7 @@ export class UsersService {
       target: 'user',
       targetId: id,
       metadata: this.cleanMetadata({
-        email,
+        email: dto.email,
         name: dto.name,
         role: dto.role,
         disabled: dto.disabled,

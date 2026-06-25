@@ -35,11 +35,10 @@ export class ImageProcessor extends WorkerHost {
         storageKey: true,
         mimeType: true,
         sizeBytes: true,
-        status: true,
       },
     });
 
-    if (!image || image.status !== ImageStatus.PROCESSING) {
+    if (!image) {
       return { ok: false };
     }
 
@@ -155,14 +154,11 @@ export class ImageProcessor extends WorkerHost {
         updates.avifUrl = this.storage.getPublicUrlWithBase(avifKey, setting);
       }
 
-      const updated = await this.prisma.image.updateMany({
-        where: { id: image.id, status: ImageStatus.PROCESSING },
+      await this.prisma.image.update({
+        where: { id: image.id },
         data: updates,
       });
-      persisted = updated.count === 1;
-      if (!persisted) {
-        return { ok: false };
-      }
+      persisted = true;
 
       if (
         updates.sizeBytes !== undefined &&
@@ -188,8 +184,8 @@ export class ImageProcessor extends WorkerHost {
       this.logger.error(
         `Failed to process image ${job.data.imageId}: ${message}`,
       );
-      await this.prisma.image.updateMany({
-        where: { id: job.data.imageId, status: ImageStatus.PROCESSING },
+      await this.prisma.image.update({
+        where: { id: job.data.imageId },
         data: { status: ImageStatus.FAILED },
       });
 

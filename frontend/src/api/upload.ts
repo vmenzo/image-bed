@@ -2,7 +2,6 @@ import axios from 'axios';
 import { http } from './http';
 import { useAuthStore } from '@/stores/auth';
 import type { ImageItem, StorageProvider, Visibility } from './types';
-import { isApiRelativeUrl, toAbsoluteApiUrl } from '@/utils/url';
 
 export type SignUploadResponse = {
   imageId: string;
@@ -46,13 +45,11 @@ export function putObject(
   onUploadProgress?: (percent: number) => void,
 ) {
   const auth = useAuthStore();
-  const isLocalApiUpload = isApiRelativeUrl(url);
-  const uploadUrl = isLocalApiUpload ? toAbsoluteApiUrl(url) : url;
   return axios
-    .put(uploadUrl, file, {
+    .put(url, file, {
       headers: {
         ...headers,
-        ...(isLocalApiUpload && auth.token
+        ...(url.startsWith('/api/') && auth.token
           ? { Authorization: `Bearer ${auth.token}` }
           : {}),
       },
@@ -62,13 +59,16 @@ export function putObject(
       },
     })
     .catch((error) => {
-      if (!isLocalApiUpload && !error.response) {
+      if (!url.startsWith('/api/') && !error.response) {
         throw new Error(
           '第三方对象存储上传失败，请检查 Bucket CORS 是否允许当前域名 PUT 上传',
         );
       }
 
-      if (!isLocalApiUpload && [403, 404].includes(error.response?.status)) {
+      if (
+        !url.startsWith('/api/') &&
+        [403, 404].includes(error.response?.status)
+      ) {
         throw new Error(
           '第三方对象存储拒绝上传，请检查 Endpoint、Bucket、权限和签名配置',
         );

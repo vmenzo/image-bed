@@ -22,7 +22,6 @@ import type { ApiKey } from '@/api/types';
 import { useAuthStore } from '@/stores/auth';
 import { copyToClipboard } from '@/utils/clipboard';
 import { formatBytes, formatDate } from '@/utils/format';
-import { toAbsoluteApiUrl } from '@/utils/url';
 
 const auth = useAuthStore();
 const loading = ref(false);
@@ -50,10 +49,9 @@ const availableBytes = computed(() =>
   Math.max((auth.user?.quotaBytes ?? 0) - (auth.user?.usedBytes ?? 0), 0),
 );
 const apiExample = computed(
-  () => `curl -X POST "${toAbsoluteApiUrl('/api/upload/import-url')}" \\
-  -H "X-API-Key: ${createdKey.value || 'YOUR_API_KEY'}" \\
+  () => `curl -H "X-API-Key: ${createdKey.value || 'YOUR_API_KEY'}" \\
   -H "Content-Type: application/json" \\
-  -d '{"url":"https://example.com/image.jpg"}'`,
+  ${window.location.origin}/api/images`,
 );
 
 async function load() {

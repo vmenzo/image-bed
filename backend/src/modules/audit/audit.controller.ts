@@ -20,16 +20,11 @@ export class AuditController {
     @Query('target') target?: string,
   ) {
     return this.audit.list({
-      page: this.positiveInt(page),
-      pageSize: this.positiveInt(pageSize),
+      page: page ? Number(page) : undefined,
+      pageSize: pageSize ? Number(pageSize) : undefined,
       action,
       actorId,
       target,
     });
-  }
-
-  private positiveInt(value?: string) {
-    const parsed = Number(value);
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
   }
 }

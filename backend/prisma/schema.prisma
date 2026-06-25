@@ -32,37 +32,37 @@ enum StorageProvider {
 }
 
 model User {
-  id                String    @id @default(cuid())
-  publicId          Int       @unique @default(autoincrement())
-  email             String    @unique
-  name              String
-  passwordHash      String
-  role              UserRole  @default(USER)
-  disabled          Boolean   @default(false)
-  quotaBytes        BigInt    @default(1073741824)
-  usedBytes         BigInt    @default(0)
-  lastLoginAt       DateTime?
+  id           String   @id @default(cuid())
+  publicId     Int      @unique @default(autoincrement())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         UserRole @default(USER)
+  disabled     Boolean  @default(false)
+  quotaBytes   BigInt   @default(1073741824)
+  usedBytes    BigInt   @default(0)
+  lastLoginAt  DateTime?
   passwordChangedAt DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  albums              Album[]
-  images              Image[]
-  apiKeys             ApiKey[]
-  setting             AppSetting?
-  auditLogs           AuditLog[]
+  albums Album[]
+  images Image[]
+  apiKeys ApiKey[]
+  setting AppSetting?
+  auditLogs AuditLog[]
   passwordResetTokens PasswordResetToken[]
-  sessions            AuthSession[]
+  sessions AuthSession[]
 }
 
 model ApiKey {
-  id         String    @id @default(cuid())
-  name       String
-  keyHash    String    @unique
+  id        String   @id @default(cuid())
+  name      String
+  keyHash   String   @unique
   lastUsedAt DateTime?
-  createdAt  DateTime  @default(now())
-  userId     String
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Album {
@@ -80,40 +80,39 @@ model Album {
 }
 
 model Image {
-  id                String          @id @default(cuid())
-  title             String
-  description       String?
-  tags              String[]        @default([])
-  favorite          Boolean         @default(false)
-  originalName      String
-  mimeType          String
-  extension         String
-  sizeBytes         BigInt
-  width             Int?
-  height            Int?
-  storageProvider   StorageProvider @default(LOCAL)
-  storageKey        String          @unique
-  publicUrl         String
-  thumbKey          String?
-  thumbUrl          String?
-  webpKey           String?
-  webpUrl           String?
-  avifKey           String?
-  avifUrl           String?
-  blurhash          String?
-  checksum          String?
-  status            ImageStatus     @default(PENDING)
-  deletedFromStatus ImageStatus?
-  visibility        Visibility      @default(PRIVATE)
-  views             Int             @default(0)
-  downloads         Int             @default(0)
-  uploadedAt        DateTime?
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
-  ownerId           String
-  owner             User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  albumId           String?
-  album             Album?          @relation(fields: [albumId], references: [id], onDelete: SetNull)
+  id          String      @id @default(cuid())
+  title       String
+  description String?
+  tags        String[]    @default([])
+  favorite    Boolean     @default(false)
+  originalName String
+  mimeType    String
+  extension   String
+  sizeBytes   BigInt
+  width       Int?
+  height      Int?
+  storageProvider StorageProvider @default(LOCAL)
+  storageKey  String      @unique
+  publicUrl   String
+  thumbKey    String?
+  thumbUrl    String?
+  webpKey     String?
+  webpUrl     String?
+  avifKey     String?
+  avifUrl     String?
+  blurhash    String?
+  checksum    String?
+  status      ImageStatus @default(PENDING)
+  visibility  Visibility  @default(PRIVATE)
+  views       Int         @default(0)
+  downloads   Int         @default(0)
+  uploadedAt  DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  ownerId     String
+  owner       User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  albumId     String?
+  album       Album?      @relation(fields: [albumId], references: [id], onDelete: SetNull)
 
   @@index([ownerId])
   @@index([albumId])
@@ -121,57 +120,57 @@ model Image {
 }
 
 model AppSetting {
-  id                     String          @id @default(cuid())
-  ownerId                String          @unique
-  owner                  User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  publicBaseUrl          String?
-  storageProvider        StorageProvider @default(LOCAL)
-  s3Endpoint             String?
-  s3Region               String?
-  s3Bucket               String?
-  s3AccessKey            String?
-  s3SecretKey            String?
-  s3ForcePathStyle       Boolean         @default(true)
-  localStoragePath       String?
-  maxSizeBytes           Int             @default(52428800)
-  defaultQuotaBytes      BigInt          @default(1073741824)
-  allowedTypes           String[]        @default(["image/jpeg", "image/png", "image/webp", "image/gif"])
-  defaultVisibility      Visibility      @default(PRIVATE)
-  generateThumbnail      Boolean         @default(true)
-  generateWebp           Boolean         @default(true)
-  generateAvif           Boolean         @default(false)
-  stripMetadata          Boolean         @default(true)
-  watermark              Boolean         @default(false)
-  watermarkText          String          @default("PicVault")
-  hotlinkProtection      Boolean         @default(false)
-  uploadAudit            Boolean         @default(false)
-  apiUpload              Boolean         @default(true)
-  telegramBotEnabled     Boolean         @default(false)
-  telegramBotToken       String?
-  telegramAllowedChatIds String[]        @default([])
-  telegramAlbumId        String?
-  telegramLastUpdateId   Int?
-  smtpEnabled            Boolean         @default(false)
-  smtpHost               String?
-  smtpPort               Int?
-  smtpSecure             Boolean         @default(true)
-  smtpUsername           String?
-  smtpPassword           String?
-  smtpFrom               String?
-  createdAt              DateTime        @default(now())
-  updatedAt              DateTime        @updatedAt
+  id                String     @id @default(cuid())
+  ownerId           String     @unique
+  owner             User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  publicBaseUrl     String?
+  storageProvider   StorageProvider @default(LOCAL)
+  s3Endpoint        String?
+  s3Region          String?
+  s3Bucket          String?
+  s3AccessKey       String?
+  s3SecretKey       String?
+  s3ForcePathStyle  Boolean    @default(true)
+  localStoragePath  String?
+  maxSizeBytes      Int        @default(52428800)
+  defaultQuotaBytes BigInt     @default(1073741824)
+  allowedTypes      String[]   @default(["image/jpeg", "image/png", "image/webp", "image/gif"])
+  defaultVisibility Visibility @default(PRIVATE)
+  generateThumbnail Boolean    @default(true)
+  generateWebp      Boolean    @default(true)
+  generateAvif      Boolean    @default(false)
+  stripMetadata     Boolean    @default(true)
+  watermark         Boolean    @default(false)
+  watermarkText     String     @default("PicVault")
+  hotlinkProtection Boolean    @default(false)
+  uploadAudit       Boolean    @default(false)
+  apiUpload         Boolean    @default(true)
+  telegramBotEnabled Boolean   @default(false)
+  telegramBotToken   String?
+  telegramAllowedChatIds String[] @default([])
+  telegramAlbumId    String?
+  telegramLastUpdateId Int?
+  smtpEnabled       Boolean    @default(false)
+  smtpHost          String?
+  smtpPort          Int?
+  smtpSecure        Boolean    @default(true)
+  smtpUsername      String?
+  smtpPassword      String?
+  smtpFrom          String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
 }
 
 model PasswordResetToken {
-  id        String    @id @default(cuid())
-  tokenHash String    @unique
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
   userId    String
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt DateTime
   usedAt    DateTime?
   ip        String?
   userAgent String?
-  createdAt DateTime  @default(now())
+  createdAt DateTime @default(now())
 
   @@index([userId])
   @@index([expiresAt])
@@ -179,13 +178,13 @@ model PasswordResetToken {
 }
 
 model AuthSession {
-  id         String    @id @default(cuid())
-  tokenHash  String    @unique
-  userId     String
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt  DateTime
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
   lastUsedAt DateTime?
-  createdAt  DateTime  @default(now())
+  createdAt DateTime @default(now())
 
   @@index([userId])
   @@index([expiresAt])

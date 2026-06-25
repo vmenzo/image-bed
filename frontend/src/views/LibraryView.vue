@@ -35,7 +35,7 @@ import {
   statusLabel,
   visibilityLabel,
 } from '@/utils/format';
-import { toAbsoluteApiUrl, toAbsoluteUrl } from '@/utils/url';
+import { toAbsoluteUrl } from '@/utils/url';
 
 const router = useRouter();
 const route = useRoute();
@@ -381,7 +381,7 @@ function shareUrl(image: ImageItem) {
 
 function downloadUrl(image: ImageItem) {
   return isShareable(image)
-    ? toAbsoluteApiUrl(`/api/public/images/${image.id}/download`)
+    ? `${window.location.origin}/api/public/images/${image.id}/download`
     : '';
 }
 

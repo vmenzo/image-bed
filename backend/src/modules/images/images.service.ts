@@ -171,22 +171,11 @@ export class ImagesService {
   }
 
   async remove(ownerId: string, id: string) {
-    const image = await this.prisma.image.findFirst({
-      where: { id, ownerId },
-      select: { id: true, status: true },
-    });
-    if (!image) {
-      throw new ForbiddenException('Image is not accessible');
-    }
-    if (image.status === ImageStatus.DELETED) {
-      return { ok: true };
-    }
-
+    await this.ensureOwner(ownerId, id);
     await this.prisma.image.update({
-      where: { id: image.id },
+      where: { id },
       data: {
         status: ImageStatus.DELETED,
-        deletedFromStatus: image.status,
       },
     });
     return { ok: true };
@@ -211,23 +200,11 @@ export class ImagesService {
   }
 
   async restore(ownerId: string, id: string) {
-    const image = await this.prisma.image.findFirst({
-      where: {
-        id,
-        ownerId,
-        status: ImageStatus.DELETED,
-      },
-    });
-    if (!image) {
-      throw new ForbiddenException('Image is not restorable');
-    }
-
-    const restoredStatus = this.restoreStatus(image.deletedFromStatus);
-    const restored = await this.prisma.image.update({
-      where: { id: image.id },
+    await this.ensureOwner(ownerId, id);
+    const image = await this.prisma.image.update({
+      where: { id },
       data: {
-        status: restoredStatus,
-        deletedFromStatus: null,
+        status: ImageStatus.READY,
       },
       include: {
         album: {
@@ -239,14 +216,7 @@ export class ImagesService {
       },
     });
 
-    if (restoredStatus === ImageStatus.PROCESSING) {
-      await this.processingQueue.add('process-image', {
-        imageId: restored.id,
-        storageKey: restored.storageKey,
-      });
-    }
-
-    return this.serializeImage(restored);
+    return this.serializeImage(image);
   }
 
   async permanentRemove(ownerId: string, id: string) {
@@ -286,63 +256,19 @@ export class ImagesService {
     };
 
     if (dto.action === BulkImageAction.DELETE) {
-      let affected = 0;
-      for (const status of [
-        ImageStatus.PENDING,
-        ImageStatus.PROCESSING,
-        ImageStatus.READY,
-        ImageStatus.FAILED,
-      ]) {
-        const result = await this.prisma.image.updateMany({
-          where: { ...where, status },
-          data: { status: ImageStatus.DELETED, deletedFromStatus: status },
-        });
-        affected += result.count;
-      }
-
-      return { affected };
+      const result = await this.prisma.image.updateMany({
+        where,
+        data: { status: ImageStatus.DELETED },
+      });
+      return { affected: result.count };
     }
 
     if (dto.action === BulkImageAction.RESTORE) {
-      const images = await this.prisma.image.findMany({
-        where: { ...where, status: ImageStatus.DELETED },
-        select: {
-          id: true,
-          storageKey: true,
-          deletedFromStatus: true,
-        },
+      const result = await this.prisma.image.updateMany({
+        where,
+        data: { status: ImageStatus.READY },
       });
-      const groups = new Map<ImageStatus, typeof images>();
-      for (const image of images) {
-        const status = this.restoreStatus(image.deletedFromStatus);
-        groups.set(status, [...(groups.get(status) ?? []), image]);
-      }
-
-      let affected = 0;
-      for (const [status, group] of groups.entries()) {
-        const result = await this.prisma.image.updateMany({
-          where: {
-            ownerId,
-            id: { in: group.map((image) => image.id) },
-            status: ImageStatus.DELETED,
-          },
-          data: { status, deletedFromStatus: null },
-        });
-        affected += result.count;
-
-        if (status === ImageStatus.PROCESSING) {
-          await Promise.all(
-            group.map((image) =>
-              this.processingQueue.add('process-image', {
-                imageId: image.id,
-                storageKey: image.storageKey,
-              }),
-            ),
-          );
-        }
-      }
-
-      return { affected };
+      return { affected: result.count };
     }
 
     if (dto.action === BulkImageAction.SET_VISIBILITY) {
@@ -412,21 +338,12 @@ export class ImagesService {
 
     if (dto.action === BulkImageAction.REPROCESS) {
       const images = await this.prisma.image.findMany({
-        where: {
-          ...where,
-          status: { not: ImageStatus.DELETED },
-          uploadedAt: { not: null },
-        },
+        where,
         select: { id: true, storageKey: true },
       });
 
       await this.prisma.image.updateMany({
-        where: {
-          ownerId,
-          id: { in: images.map((image) => image.id) },
-          status: { not: ImageStatus.DELETED },
-          uploadedAt: { not: null },
-        },
+        where,
         data: { status: ImageStatus.PROCESSING },
       });
 
@@ -512,8 +429,6 @@ export class ImagesService {
       where: {
         id,
         ownerId,
-        status: { not: ImageStatus.DELETED },
-        uploadedAt: { not: null },
       },
       select: {
         id: true,
@@ -522,7 +437,7 @@ export class ImagesService {
     });
 
     if (!image) {
-      throw new ForbiddenException('Image is not reprocessable');
+      throw new ForbiddenException('Image is not accessible');
     }
 
     await this.prisma.image.update({
@@ -735,10 +650,6 @@ export class ImagesService {
     }
 
     throw new BadRequestException('Invalid image asset variant');
-  }
-
-  private restoreStatus(value: ImageStatus | null) {
-    return value && value !== ImageStatus.DELETED ? value : ImageStatus.READY;
   }
 
   private async getImageStorageSetting(

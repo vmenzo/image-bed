@@ -62,7 +62,6 @@ export class MaintenanceService {
     const images = await this.prisma.image.findMany({
       where: {
         status: { not: ImageStatus.DELETED },
-        uploadedAt: { not: null },
         id: dto.imageIds?.length ? { in: dto.imageIds } : undefined,
         OR: dto.missingOnly
           ? [{ thumbKey: null }, { webpKey: null }]
@@ -76,11 +75,7 @@ export class MaintenanceService {
     });
 
     await this.prisma.image.updateMany({
-      where: {
-        id: { in: images.map((image) => image.id) },
-        status: { not: ImageStatus.DELETED },
-        uploadedAt: { not: null },
-      },
+      where: { id: { in: images.map((image) => image.id) } },
       data: { status: ImageStatus.PROCESSING },
     });
 
@@ -114,7 +109,6 @@ export class MaintenanceService {
     const images = await this.prisma.image.findMany({
       where: {
         status: { not: ImageStatus.DELETED },
-        uploadedAt: { not: null },
         storageProvider: { not: dto.targetProvider },
         id: dto.imageIds?.length ? { in: dto.imageIds } : undefined,
       },
