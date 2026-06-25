@@ -36,14 +36,14 @@ export class UsersController {
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('q') q?: string,
-    @Query('role') role?: UserRole,
+    @Query('role') role?: string,
     @Query('disabled') disabled?: string,
   ) {
     return this.users.list({
-      page: page ? Number(page) : undefined,
-      pageSize: pageSize ? Number(pageSize) : undefined,
+      page: this.positiveInt(page),
+      pageSize: this.positiveInt(pageSize),
       q,
-      role,
+      role: this.userRole(role),
       disabled:
         disabled === undefined ? undefined : ['true', '1'].includes(disabled),
     });
@@ -85,5 +85,16 @@ export class UsersController {
       actorId: user.id,
       request,
     });
+  }
+
+  private positiveInt(value?: string) {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+  }
+
+  private userRole(value?: string) {
+    return Object.values(UserRole).includes(value as UserRole)
+      ? (value as UserRole)
+      : undefined;
   }
 }

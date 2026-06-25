@@ -7,7 +7,7 @@ import { publicImageInfoApi } from '@/api/images';
 import type { ImageItem } from '@/api/types';
 import { copyToClipboard } from '@/utils/clipboard';
 import { formatBytes, formatDate, visibilityLabel } from '@/utils/format';
-import { toAbsoluteUrl } from '@/utils/url';
+import { toAbsoluteApiUrl, toAbsoluteUrl } from '@/utils/url';
 
 const route = useRoute();
 const loading = ref(true);
@@ -15,7 +15,7 @@ const image = ref<ImageItem | null>(null);
 
 const downloadUrl = computed(() =>
   image.value
-    ? `${window.location.origin}/api/public/images/${image.value.id}/download`
+    ? toAbsoluteApiUrl(`/api/public/images/${image.value.id}/download`)
     : '',
 );
 
@@ -63,7 +63,7 @@ onMounted(async () => {
   <main class="share-page" v-loading="loading">
     <section v-if="image" class="share-shell">
       <div class="share-preview">
-        <img :src="image.publicUrl" :alt="image.title" />
+        <img :src="toAbsoluteUrl(image.publicUrl)" :alt="image.title" />
       </div>
 
       <aside class="share-panel">

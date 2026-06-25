@@ -11,6 +11,7 @@ import {
 import { getTelegramStatusApi } from '@/api/telegram';
 import { useAuthStore } from '@/stores/auth';
 import type { Album, StorageProvider, Visibility } from '@/api/types';
+import { toAbsoluteApiUrl } from '@/utils/url';
 
 const auth = useAuthStore();
 const loading = ref(false);
@@ -20,7 +21,7 @@ const testingEmail = ref(false);
 const albums = ref<Album[]>([]);
 const telegramConfigured = ref(false);
 const defaultPublicBaseUrl = '';
-const localPublicBaseUrl = `${window.location.origin}/api/public/files`;
+const localPublicBaseUrl = toAbsoluteApiUrl('/api/public/files');
 
 const storage = reactive({
   publicBaseUrl: defaultPublicBaseUrl,
