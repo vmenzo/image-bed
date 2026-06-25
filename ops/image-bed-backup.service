@@ -1,8 +1,0 @@
-[Unit]
-Description=Image Bed Backup
-
-[Service]
-Type=oneshot
-WorkingDirectory=/root/image-bed
-EnvironmentFile=/root/image-bed/.env
-ExecStart=/root/image-bed/scripts/backup.sh

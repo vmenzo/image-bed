@@ -25,7 +25,7 @@ const localPublicBaseUrl = `${window.location.origin}/api/public/files`;
 const storage = reactive({
   publicBaseUrl: defaultPublicBaseUrl,
   provider: 'S3' as StorageProvider,
-  localStoragePath: '/root/image-bed/backend/storage',
+  localStoragePath: '/app/backend/storage',
   s3Endpoint: '',
   s3Region: 'us-east-1',
   s3Bucket: '',

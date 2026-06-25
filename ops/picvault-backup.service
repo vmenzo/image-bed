@@ -1,0 +1,8 @@
+[Unit]
+Description=PicVault Backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/picvault
+EnvironmentFile=/opt/picvault/.env
+ExecStart=/opt/picvault/scripts/backup.sh

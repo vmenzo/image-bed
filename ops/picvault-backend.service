@@ -1,11 +1,11 @@
 [Unit]
-Description=Image Bed Backend
+Description=PicVault Backend
 After=network.target docker.service
 Requires=docker.service
 
 [Service]
 Type=simple
-WorkingDirectory=/root/image-bed/backend
+WorkingDirectory=/opt/picvault/backend
 Environment=NODE_ENV=production
 ExecStart=/usr/bin/node dist/main
 Restart=always

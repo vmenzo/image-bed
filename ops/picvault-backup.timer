@@ -1,5 +1,5 @@
 [Unit]
-Description=Run Image Bed Backup Daily
+Description=Run PicVault Backup Daily
 
 [Timer]
 OnCalendar=*-*-* 03:30:00

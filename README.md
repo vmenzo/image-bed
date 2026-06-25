@@ -24,19 +24,19 @@ PicVault 是一套基于 Docker Compose 部署的图床系统，包含 Web 管�
 root 用户执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vmenzo/image-bed/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/vmenzo/PicVault/main/scripts/install.sh | bash
 ```
 
 非 root 用户执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vmenzo/image-bed/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/vmenzo/PicVault/main/scripts/install.sh | sudo bash
 ```
 
 指定端口和公开域名：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vmenzo/image-bed/main/scripts/install.sh | PICVAULT_PORT=7899 APP_PUBLIC_URL=https://img.example.com bash
+curl -fsSL https://raw.githubusercontent.com/vmenzo/PicVault/main/scripts/install.sh | PICVAULT_PORT=7899 APP_PUBLIC_URL=https://img.example.com bash
 ```
 
 默认安装目录：`/opt/picvault`
@@ -48,8 +48,8 @@ curl -fsSL https://raw.githubusercontent.com/vmenzo/image-bed/main/scripts/insta
 ## 手动部署
 
 ```bash
-git clone https://github.com/vmenzo/image-bed.git image-bed
-cd image-bed
+git clone https://github.com/vmenzo/PicVault.git picvault
+cd picvault
 cp .env.production.example .env
 nano .env
 docker compose up -d --build

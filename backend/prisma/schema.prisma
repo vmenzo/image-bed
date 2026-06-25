@@ -141,7 +141,7 @@ model AppSetting {
   generateAvif      Boolean    @default(false)
   stripMetadata     Boolean    @default(true)
   watermark         Boolean    @default(false)
-  watermarkText     String     @default("Image Bed")
+  watermarkText     String     @default("PicVault")
   hotlinkProtection Boolean    @default(false)
   uploadAudit       Boolean    @default(false)
   apiUpload         Boolean    @default(true)

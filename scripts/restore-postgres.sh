@@ -6,5 +6,7 @@ if [ "${1:-}" = "" ]; then
   exit 1
 fi
 
-cd /root/image-bed
-docker compose exec -T postgres psql -U "${POSTGRES_USER:-imagebed}" -d "${POSTGRES_DB:-imagebed}" < "$1"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cd "${ROOT_DIR}"
+docker compose exec -T postgres psql -U "${POSTGRES_USER:-picvault}" -d "${POSTGRES_DB:-picvault}" < "$1"

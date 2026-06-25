@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REPO_URL="${PICVAULT_REPO_URL:-https://github.com/vmenzo/image-bed.git}"
-INSTALL_URL="${PICVAULT_INSTALL_URL:-https://raw.githubusercontent.com/vmenzo/image-bed/main/scripts/install.sh}"
+REPO_URL="${PICVAULT_REPO_URL:-https://github.com/vmenzo/PicVault.git}"
+INSTALL_URL="${PICVAULT_INSTALL_URL:-https://raw.githubusercontent.com/vmenzo/PicVault/main/scripts/install.sh}"
 INSTALL_DIR="${PICVAULT_INSTALL_DIR:-/opt/picvault}"
 PICVAULT_PORT_INPUT="${PICVAULT_PORT:-}"
 APP_HOST_PORT="${PICVAULT_PORT_INPUT:-7899}"

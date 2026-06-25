@@ -3,7 +3,7 @@ import { router } from '@/router';
 import { loginApi, meApi, registerApi, updateProfileApi } from '@/api/auth';
 import type { User } from '@/api/types';
 
-const TOKEN_KEY = 'image-bed-token';
+const TOKEN_KEY = 'picvault-token';
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({

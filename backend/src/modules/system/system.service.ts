@@ -140,8 +140,9 @@ export class SystemService {
 
   private async latestBackup() {
     const backupDir =
+      this.config.get<string>('PICVAULT_BACKUP_DIR') ??
       this.config.get<string>('IMAGE_BED_BACKUP_DIR') ??
-      '/root/image-bed/backups';
+      '/app/backups';
 
     try {
       const entries = await readdir(backupDir, { withFileTypes: true });
