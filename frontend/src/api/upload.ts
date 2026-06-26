@@ -59,6 +59,14 @@ export function putObject(
       },
     })
     .catch((error) => {
+      const rawMessage =
+        error.response?.data?.message ?? error.message ?? '上传失败';
+      const message = Array.isArray(rawMessage) ? rawMessage[0] : rawMessage;
+
+      if (url.startsWith('/api/')) {
+        throw new Error(message);
+      }
+
       if (!url.startsWith('/api/') && !error.response) {
         throw new Error(
           '第三方对象存储上传失败，请检查 Bucket CORS 是否允许当前域名 PUT 上传',

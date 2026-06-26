@@ -356,7 +356,7 @@ watch(
               type="info"
               show-icon
               :closable="false"
-              title="填写第三方 S3 兼容对象存储配置，例如 Cloudflare R2、AWS S3、阿里云 OSS S3、腾讯 COS S3 或七牛 Kodo S3。Bucket 需要允许浏览器 PUT 的 CORS。"
+              title="填写第三方 S3 兼容对象存储配置。Bucket 只填桶名；CDN 或公开访问域名填在上面的公开访问域名 / CDN 域名。上传会先经过 PicVault 后端写入对象存储。"
             />
             <div class="preset-row">
               <el-button
@@ -375,10 +375,10 @@ watch(
                   placeholder="https://s3.example.com"
                 />
               </el-form-item>
-              <el-form-item label="Bucket">
+              <el-form-item label="Bucket（只填桶名，不填域名）">
                 <el-input
                   v-model="storage.s3Bucket"
-                  placeholder="picvault-assets"
+                  placeholder="例如 picvault-assets，不要填 https://..."
                 />
               </el-form-item>
               <el-form-item label="Region">

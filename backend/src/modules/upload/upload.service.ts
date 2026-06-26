@@ -136,10 +136,11 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
 
     const setting = await this.settings.getRuntime(ownerId);
     const storageSetting = this.toStorageSetting(setting);
-    const draft = await this.storage.createLocalUploadDraft({
+    const draft = await this.storage.createUploadDraft({
       key,
       body,
       expectedSizeBytes: Number(image.sizeBytes),
+      contentType: image.mimeType,
       setting: {
         ...storageSetting,
         storageProvider: image.storageProvider,
@@ -177,10 +178,6 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
 
     if (!image || image.ownerId !== ownerId) {
       throw new ForbiddenException('Image is not accessible');
-    }
-
-    if (image.storageProvider !== StorageProvider.LOCAL) {
-      throw new BadRequestException('Image is not configured for local upload');
     }
 
     if (image.status !== ImageStatus.PENDING || image.uploadedAt) {

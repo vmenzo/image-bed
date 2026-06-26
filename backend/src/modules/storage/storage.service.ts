@@ -5,12 +5,12 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StorageProvider } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { constants, createReadStream, createWriteStream } from 'node:fs';
+import { tmpdir } from 'node:os';
 import {
   access,
   mkdir,
@@ -47,7 +47,6 @@ export type LocalUploadDraft = {
 export class StorageService implements OnModuleInit {
   private defaultBucket: string;
   private defaultPublicBaseUrl: string;
-  private defaultUploadEndpoint: string;
   private defaultLocalStoragePath: string;
 
   constructor(private readonly config: ConfigService) {}
@@ -56,10 +55,6 @@ export class StorageService implements OnModuleInit {
     this.defaultBucket = this.config.get<string>('S3_BUCKET') ?? '';
     this.defaultPublicBaseUrl =
       this.config.get<string>('PUBLIC_IMAGE_BASE_URL') ?? '/api/public/files';
-    this.defaultUploadEndpoint =
-      this.config.get<string>('S3_UPLOAD_ENDPOINT') ||
-      this.config.get<string>('S3_ENDPOINT') ||
-      '';
     this.defaultLocalStoragePath =
       this.config.get<string>('LOCAL_STORAGE_PATH') ??
       path.resolve(process.cwd(), 'storage');
@@ -71,10 +66,9 @@ export class StorageService implements OnModuleInit {
 
   getPublicUrlWithBase(key: string, setting?: StorageRuntimeConfig) {
     const base =
-      setting?.publicBaseUrl?.trim() ||
-      (this.getProvider(setting) === StorageProvider.LOCAL
+      this.getProvider(setting) === StorageProvider.LOCAL
         ? '/api/public/files'
-        : this.defaultPublicBaseUrl);
+        : setting?.publicBaseUrl?.trim() || this.defaultPublicBaseUrl;
     return `${base.replace(/\/$/, '')}/${key}`;
   }
 
@@ -84,26 +78,11 @@ export class StorageService implements OnModuleInit {
     sizeBytes: number;
     setting?: StorageRuntimeConfig;
   }) {
-    if (this.getProvider(input.setting) === StorageProvider.LOCAL) {
-      return `/api/upload/${encodeURIComponent(input.key)}/object`;
+    if (this.getProvider(input.setting) === StorageProvider.S3) {
+      this.ensureS3Ready(input.setting);
     }
 
-    this.ensureS3Ready(input.setting);
-    const command = new PutObjectCommand({
-      Bucket: this.getBucket(input.setting),
-      Key: input.key,
-      ContentType: input.contentType,
-      ContentLength: input.sizeBytes,
-    });
-
-    const signed = await getSignedUrl(
-      this.createS3Client(input.setting),
-      command,
-      {
-        expiresIn: 900,
-      },
-    );
-    return this.rewriteSignedUrl(signed, input.setting);
+    return `/api/upload/${encodeURIComponent(input.key)}/object`;
   }
 
   async getObjectBuffer(key: string, setting?: StorageRuntimeConfig) {
@@ -166,15 +145,20 @@ export class StorageService implements OnModuleInit {
 
   async putObject(input: {
     key: string;
-    body: Buffer;
+    body: Buffer | Readable;
     contentType: string;
+    contentLength?: number;
     cacheControl?: string;
     setting?: StorageRuntimeConfig;
   }) {
     if (this.getProvider(input.setting) === StorageProvider.LOCAL) {
       const filePath = this.getLocalPath(input.key, input.setting);
       await mkdir(path.dirname(filePath), { recursive: true });
-      await writeFile(filePath, input.body);
+      if (Buffer.isBuffer(input.body)) {
+        await writeFile(filePath, input.body);
+      } else {
+        await pipeline(input.body, createWriteStream(filePath));
+      }
       return this.getPublicUrlWithBase(input.key, input.setting);
     }
 
@@ -185,6 +169,9 @@ export class StorageService implements OnModuleInit {
         Key: input.key,
         Body: input.body,
         ContentType: input.contentType,
+        ContentLength:
+          input.contentLength ??
+          (Buffer.isBuffer(input.body) ? input.body.length : undefined),
         CacheControl:
           input.cacheControl ?? 'public, max-age=31536000, immutable',
       }),
@@ -193,23 +180,29 @@ export class StorageService implements OnModuleInit {
     return this.getPublicUrlWithBase(input.key, input.setting);
   }
 
-  async createLocalUploadDraft(input: {
+  async createUploadDraft(input: {
     key: string;
     body: AsyncIterable<Buffer | Uint8Array | string>;
     expectedSizeBytes: number;
+    contentType: string;
     setting?: StorageRuntimeConfig;
   }): Promise<LocalUploadDraft> {
-    if (this.getProvider(input.setting) !== StorageProvider.LOCAL) {
-      throw new BadRequestException('Image is not configured for local upload');
+    const provider = this.getProvider(input.setting);
+    if (provider === StorageProvider.S3) {
+      this.ensureS3Ready(input.setting);
     }
-
-    const finalPath = this.getLocalPath(input.key, input.setting);
-    const tempDir = path.join(path.dirname(finalPath), '.tmp');
+    const finalPath =
+      provider === StorageProvider.LOCAL
+        ? this.getLocalPath(input.key, input.setting)
+        : null;
+    const tempDir = finalPath
+      ? path.join(path.dirname(finalPath), '.tmp')
+      : path.join(tmpdir(), 'picvault-uploads');
     await mkdir(tempDir, { recursive: true });
 
     const tempPath = path.join(
       tempDir,
-      `${path.basename(finalPath)}.${randomUUID()}.upload`,
+      `${path.basename(finalPath ?? input.key)}.${randomUUID()}.upload`,
     );
     let sizeBytes = 0;
 
@@ -249,8 +242,24 @@ export class StorageService implements OnModuleInit {
       tempPath,
       sizeBytes,
       commit: async () => {
-        await mkdir(path.dirname(finalPath), { recursive: true });
-        await rename(tempPath, finalPath);
+        if (finalPath) {
+          await mkdir(path.dirname(finalPath), { recursive: true });
+          await rename(tempPath, finalPath);
+          return this.getPublicUrlWithBase(input.key, input.setting);
+        }
+
+        try {
+          await this.putObject({
+            key: input.key,
+            body: createReadStream(tempPath),
+            contentType: input.contentType,
+            contentLength: sizeBytes,
+            setting: input.setting,
+          });
+        } finally {
+          await rm(tempPath, { force: true }).catch(() => undefined);
+        }
+
         return this.getPublicUrlWithBase(input.key, input.setting);
       },
       cleanup: () => rm(tempPath, { force: true }).then(() => undefined),
@@ -337,48 +346,6 @@ export class StorageService implements OnModuleInit {
         setting?.s3ForcePathStyle ??
         (this.config.get<string>('S3_FORCE_PATH_STYLE') ?? 'true') === 'true',
     });
-  }
-
-  private rewriteSignedUrl(url: string, setting?: StorageRuntimeConfig) {
-    const endpoint =
-      setting?.s3Endpoint?.trim() ||
-      this.config.get<string>('S3_ENDPOINT') ||
-      '';
-    const publicEndpoint =
-      this.config.get<string>('S3_UPLOAD_ENDPOINT')?.trim() || endpoint;
-
-    if (publicEndpoint === endpoint) {
-      return url;
-    }
-
-    try {
-      const signed = new URL(url);
-      const source = new URL(endpoint);
-
-      if (signed.origin !== source.origin) {
-        return url;
-      }
-
-      if (publicEndpoint.startsWith('/')) {
-        const targetPath = publicEndpoint.replace(/\/$/, '');
-        if (targetPath && !signed.pathname.startsWith(`${targetPath}/`)) {
-          signed.pathname = `${targetPath}${signed.pathname}`;
-        }
-
-        return `${signed.pathname}${signed.search}${signed.hash}`;
-      }
-
-      const target = new URL(publicEndpoint);
-      signed.protocol = target.protocol;
-      signed.host = target.host;
-      const targetPath = target.pathname.replace(/\/$/, '');
-      if (targetPath && !signed.pathname.startsWith(`${targetPath}/`)) {
-        signed.pathname = `${targetPath}${signed.pathname}`;
-      }
-      return signed.toString();
-    } catch {
-      return url;
-    }
   }
 
   private getBucket(setting?: StorageRuntimeConfig) {
