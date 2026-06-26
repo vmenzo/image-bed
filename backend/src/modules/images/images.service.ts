@@ -210,11 +210,19 @@ export class ImagesService {
 
   async restore(ownerId: string, id: string) {
     await this.ensureOwner(ownerId, id);
-    const image = await this.prisma.image.update({
-      where: { id },
+    const restored = await this.prisma.image.updateMany({
+      where: { id, ownerId, status: ImageStatus.DELETED },
       data: {
         status: ImageStatus.READY,
       },
+    });
+
+    if (restored.count !== 1) {
+      throw new BadRequestException('Only deleted images can be restored');
+    }
+
+    const image = await this.prisma.image.findUniqueOrThrow({
+      where: { id },
       include: {
         album: {
           select: {
@@ -277,7 +285,10 @@ export class ImagesService {
 
     if (dto.action === BulkImageAction.RESTORE) {
       const result = await this.prisma.image.updateMany({
-        where,
+        where: {
+          ...where,
+          status: ImageStatus.DELETED,
+        },
         data: { status: ImageStatus.READY },
       });
       return { affected: result.count };

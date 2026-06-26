@@ -90,6 +90,9 @@ const moveAlbumOptions = computed(() => [
 const selectedImages = computed(() =>
   images.value.filter((image) => selectedIds.value.includes(image.id)),
 );
+const selectedDeletedImages = computed(() =>
+  selectedImages.value.filter((image) => image.status === 'DELETED'),
+);
 const allVisibleSelected = computed(
   () =>
     images.value.length > 0 &&
@@ -292,9 +295,17 @@ async function bulkDelete() {
 
 async function bulkRestore() {
   if (!selectedIds.value.length) return;
-  await bulkImagesApi({ ids: selectedIds.value, action: 'RESTORE' });
+  if (!selectedDeletedImages.value.length) {
+    ElMessage.warning('所选图片没有可恢复的回收站项目');
+    return;
+  }
+
+  const result = await bulkImagesApi({
+    ids: selectedDeletedImages.value.map((image) => image.id),
+    action: 'RESTORE',
+  });
   selectedIds.value = [];
-  ElMessage.success('已批量恢复');
+  ElMessage.success(`已恢复 ${result.affected} 张图片`);
   load();
 }
 
@@ -598,7 +609,13 @@ watch(
             >删标签</el-button
           >
           <el-button size="small" @click="bulkReprocess">重新处理</el-button>
-          <el-button size="small" @click="bulkRestore">恢复</el-button>
+          <el-button
+            size="small"
+            :disabled="!selectedDeletedImages.length"
+            @click="bulkRestore"
+          >
+            恢复
+          </el-button>
           <el-button size="small" type="danger" plain @click="bulkDelete"
             >删除</el-button
           >

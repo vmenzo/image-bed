@@ -10,7 +10,7 @@ import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StorageProvider } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { constants, createReadStream, createWriteStream } from 'node:fs';
 import {
   access,
   mkdir,
@@ -66,7 +66,7 @@ export class StorageService implements OnModuleInit {
   }
 
   getProvider(setting?: StorageRuntimeConfig) {
-    return setting?.storageProvider ?? StorageProvider.S3;
+    return setting?.storageProvider ?? StorageProvider.LOCAL;
   }
 
   getPublicUrlWithBase(key: string, setting?: StorageRuntimeConfig) {
@@ -287,12 +287,34 @@ export class StorageService implements OnModuleInit {
   }
 
   async testS3Connection(setting?: StorageRuntimeConfig) {
-    this.ensureS3Ready(setting);
-    await this.createS3Client(setting).send(
+    const s3Setting: StorageRuntimeConfig = {
+      ...(setting ?? {}),
+      storageProvider: StorageProvider.S3,
+    };
+    this.ensureS3Ready(s3Setting);
+    await this.createS3Client(s3Setting).send(
       new HeadBucketCommand({
-        Bucket: this.getBucket(setting),
+        Bucket: this.getBucket(s3Setting),
       }),
     );
+  }
+
+  async testLocalStorage(setting?: StorageRuntimeConfig) {
+    if (this.getProvider(setting) !== StorageProvider.LOCAL) {
+      throw new BadRequestException(
+        'Image is not configured for local storage',
+      );
+    }
+
+    const root = this.getLocalRoot(setting);
+    await mkdir(root, { recursive: true });
+    await access(root, constants.R_OK | constants.W_OK);
+
+    const probePath = path.join(root, `.picvault-write-test-${randomUUID()}`);
+    await writeFile(probePath, '');
+    await rm(probePath, { force: true });
+
+    return root;
   }
 
   private createS3Client(setting?: StorageRuntimeConfig) {
@@ -389,9 +411,7 @@ export class StorageService implements OnModuleInit {
   }
 
   private getLocalPath(key: string, setting?: StorageRuntimeConfig) {
-    const root = path.resolve(
-      setting?.localStoragePath?.trim() || this.defaultLocalStoragePath,
-    );
+    const root = this.getLocalRoot(setting);
     const filePath = path.resolve(root, key);
 
     if (!filePath.startsWith(`${root}${path.sep}`)) {
@@ -399,6 +419,12 @@ export class StorageService implements OnModuleInit {
     }
 
     return filePath;
+  }
+
+  private getLocalRoot(setting?: StorageRuntimeConfig) {
+    return path.resolve(
+      setting?.localStoragePath?.trim() || this.defaultLocalStoragePath,
+    );
   }
 
   private async streamToBuffer(stream: Readable) {

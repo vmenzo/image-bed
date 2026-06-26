@@ -126,10 +126,12 @@ export class SettingsService {
   async testStorage(ownerId: string) {
     const setting = await this.getRuntime(ownerId);
     if (setting.storageProvider === StorageProvider.LOCAL) {
+      const path = await this.storage.testLocalStorage(setting);
       return {
         ok: true,
         provider: setting.storageProvider,
-        message: 'Local storage is configured',
+        path,
+        message: 'Local storage is readable and writable',
       };
     }
 
