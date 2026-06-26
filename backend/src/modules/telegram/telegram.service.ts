@@ -52,6 +52,17 @@ type InlineKeyboardButton = {
 type TelegramPanel = {
   text: string;
   keyboard?: InlineKeyboardButton[][];
+  previews?: TelegramPreview[];
+};
+
+type TelegramPreview = {
+  title: string;
+  ownerId: string;
+  storageKey: string;
+  storageProvider: StorageProvider;
+  contentType: string;
+  imageUrl?: string;
+  shareUrl?: string;
 };
 
 type TelegramUrlSetting = {
@@ -59,6 +70,10 @@ type TelegramUrlSetting = {
   appPublicUrl?: string | null;
   storageProvider?: StorageProvider;
 };
+
+type TelegramRuntimeSetting = Awaited<
+  ReturnType<SettingsService['getRuntime']>
+>;
 
 const CALLBACK_PREFIX = 'pv:';
 
@@ -81,7 +96,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   onModuleInit() {
     this.timer = setInterval(() => {
       void this.poll();
-    }, 6000);
+    }, 2000);
+    void this.poll();
   }
 
   onModuleDestroy() {
@@ -173,11 +189,23 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         },
       });
 
-      for (const setting of settings) {
-        await this.pollAccount(setting.ownerId, setting.telegramBotToken!);
-      }
+      const results = await Promise.allSettled(
+        settings.map((setting) =>
+          this.pollAccount(setting.ownerId, setting.telegramBotToken!),
+        ),
+      );
+      const errors = results
+        .filter(
+          (result): result is PromiseRejectedResult =>
+            result.status === 'rejected',
+        )
+        .map((result) =>
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason),
+        );
       this.lastPollAt = new Date();
-      this.lastError = undefined;
+      this.lastError = errors.length ? errors.join('\n') : undefined;
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
       this.logger.warn(this.lastError);
@@ -193,8 +221,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
 
     const updates = await this.telegram<TelegramUpdate[]>(token, 'getUpdates', {
-      timeout: 0,
-      limit: 10,
+      timeout: 10,
+      limit: 50,
       allowed_updates: ['message', 'callback_query'],
       offset: setting.telegramLastUpdateId
         ? setting.telegramLastUpdateId + 1
@@ -202,12 +230,20 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     });
 
     for (const update of updates) {
-      await this.prisma.appSetting.update({
-        where: { ownerId },
-        data: { telegramLastUpdateId: update.update_id },
-      });
-
-      await this.handleUpdate(ownerId, token, setting, update);
+      try {
+        await this.handleUpdate(ownerId, token, setting, update);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.lastError = message;
+        this.logger.warn(
+          `Telegram update ${update.update_id} failed: ${message}`,
+        );
+      } finally {
+        await this.prisma.appSetting.update({
+          where: { ownerId },
+          data: { telegramLastUpdateId: update.update_id },
+        });
+      }
     }
   }
 
@@ -298,19 +334,22 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         visibility: setting.defaultVisibility,
         setting,
       });
-      const links = this.publicLinksForImage(image, setting);
+      const displayImage =
+        (await this.waitForImage(ownerId, image.id, 5000)) ?? image;
+      const links = this.publicLinksForImage(displayImage, setting);
       const markdown = links.imageUrl
-        ? `![${image.originalName}](${links.imageUrl})`
+        ? `![${displayImage.originalName}](${links.imageUrl})`
         : '';
 
       await this.sendPanel(token, chatId, {
         text: [
           'PicVault 上传完成',
           '',
-          `文件：${image.originalName}`,
-          `大小：${this.formatBytes(Number(image.sizeBytes))}`,
-          `可见性：${this.visibilityText(image.visibility)}`,
-          this.publicLinkLine(image, setting),
+          `文件：${displayImage.originalName}`,
+          `大小：${this.formatBytes(Number(displayImage.sizeBytes))}`,
+          `状态：${this.statusText(displayImage.status)}`,
+          `可见性：${this.visibilityText(displayImage.visibility)}`,
+          this.publicLinkLine(displayImage, setting),
           links.shareUrl ? `分享页：${links.shareUrl}` : '',
           markdown ? `Markdown：${markdown}` : '',
         ]
@@ -333,10 +372,13 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
             : []),
           [
             { text: '复制格式', callback_data: 'pv:links' },
-            { text: '最近图片', callback_data: 'pv:recent' },
+            { text: '图片库', callback_data: 'pv:library' },
             { text: '控制台', callback_data: 'pv:home' },
           ],
         ],
+        previews: [this.previewForImage(ownerId, displayImage, setting)].filter(
+          (preview): preview is TelegramPreview => Boolean(preview),
+        ),
       });
     } catch (error) {
       const messageText =
@@ -377,42 +419,92 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     text: string,
   ) {
-    const command = text.trim().split(/\s+/)[0].toLowerCase().split('@')[0];
-    const panel =
-      command === '/start' || command === '/panel' || command === '/menu'
-        ? await this.homePanel(ownerId, setting)
-        : command === '/status'
-          ? await this.statusPanel(ownerId, setting)
-          : command === '/recent'
-            ? await this.recentPanel(ownerId, setting)
-            : command === '/links'
-              ? await this.linksPanel(ownerId, setting)
-              : command === '/albums'
-                ? await this.albumsPanel(ownerId, setting)
-                : command === '/policy' || command === '/visibility'
-                  ? this.policyPanel(setting)
-                  : command === '/upload'
-                    ? this.uploadGuidePanel(setting)
-                    : command === '/site'
-                      ? this.sitePanel(setting)
-                      : command === '/public'
-                        ? await this.updateDefaultVisibility(
-                            ownerId,
-                            Visibility.PUBLIC,
-                          )
-                        : command === '/private'
-                          ? await this.updateDefaultVisibility(
-                              ownerId,
-                              Visibility.PRIVATE,
-                            )
-                          : command === '/unlisted'
-                            ? await this.updateDefaultVisibility(
-                                ownerId,
-                                Visibility.UNLISTED,
-                              )
-                            : command === '/help'
-                              ? this.helpPanel(undefined, setting)
-                              : this.helpPanel('未知命令。', setting);
+    const trimmed = text.trim();
+    if (/^https?:\/\//i.test(trimmed)) {
+      await this.sendPanel(
+        token,
+        chatId,
+        await this.grabUrlPanel(ownerId, setting, trimmed),
+      );
+      return;
+    }
+
+    const [rawCommand = '', ...args] = trimmed.split(/\s+/);
+    const command = rawCommand.toLowerCase().split('@')[0];
+    const argument = args.join(' ').trim();
+    let panel: TelegramPanel;
+    switch (command) {
+      case '/start':
+      case '/panel':
+      case '/menu':
+        panel = await this.homePanel(ownerId, setting);
+        break;
+      case '/console':
+        panel = await this.homePanel(ownerId, setting);
+        break;
+      case '/library':
+        panel = await this.libraryPanel(ownerId, setting);
+        break;
+      case '/search':
+        panel = await this.searchPanel(ownerId, setting, argument);
+        break;
+      case '/grab':
+        panel = await this.grabUrlPanel(ownerId, setting, argument);
+        break;
+      case '/status':
+        panel = await this.statusPanel(ownerId, setting);
+        break;
+      case '/integrations':
+        panel = await this.integrationPanel(ownerId, setting, chatId);
+        break;
+      case '/recent':
+        panel = await this.recentPanel(ownerId, setting);
+        break;
+      case '/links':
+        panel = await this.linksPanel(ownerId, setting);
+        break;
+      case '/albums':
+        panel = await this.albumsPanel(ownerId, setting);
+        break;
+      case '/location':
+        panel = await this.uploadLocationPanel(ownerId, setting);
+        break;
+      case '/keys':
+        panel = await this.apiKeysPanel(ownerId, setting);
+        break;
+      case '/trash':
+        panel = await this.trashPanel(ownerId, setting);
+        break;
+      case '/policy':
+      case '/visibility':
+        panel = this.policyPanel(setting);
+        break;
+      case '/upload':
+        panel = this.uploadGuidePanel(setting);
+        break;
+      case '/site':
+        panel = this.sitePanel(setting);
+        break;
+      case '/public':
+        panel = await this.updateDefaultVisibility(ownerId, Visibility.PUBLIC);
+        break;
+      case '/private':
+        panel = await this.updateDefaultVisibility(ownerId, Visibility.PRIVATE);
+        break;
+      case '/unlisted':
+        panel = await this.updateDefaultVisibility(
+          ownerId,
+          Visibility.UNLISTED,
+        );
+        break;
+      case '/help':
+        panel = this.helpPanel(undefined, setting);
+        break;
+      default:
+        panel = command.startsWith('/')
+          ? this.helpPanel('未知命令。', setting)
+          : await this.searchPanel(ownerId, setting, trimmed);
+    }
 
     await this.sendPanel(token, chatId, panel);
   }
@@ -437,17 +529,40 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
 
     const action = data.slice(CALLBACK_PREFIX.length);
+    await this.answerCallback(token, callback.id).catch(() => undefined);
+
     let panel: TelegramPanel;
     if (action === 'home') {
       panel = await this.homePanel(ownerId, setting);
+    } else if (action === 'console' || action === 'refresh') {
+      panel = await this.homePanel(ownerId, setting);
     } else if (action === 'status') {
       panel = await this.statusPanel(ownerId, setting);
+    } else if (action === 'integrations') {
+      panel = await this.integrationPanel(ownerId, setting, String(chatId));
+    } else if (action === 'library') {
+      panel = await this.libraryPanel(ownerId, setting);
+    } else if (action === 'search') {
+      panel = await this.searchPanel(ownerId, setting, '');
+    } else if (action === 'grab') {
+      panel = await this.grabUrlPanel(ownerId, setting, '');
     } else if (action === 'recent') {
       panel = await this.recentPanel(ownerId, setting);
     } else if (action === 'links') {
       panel = await this.linksPanel(ownerId, setting);
     } else if (action === 'albums') {
       panel = await this.albumsPanel(ownerId, setting);
+    } else if (action === 'location') {
+      panel = await this.uploadLocationPanel(ownerId, setting);
+    } else if (action.startsWith('album:')) {
+      panel = await this.updateTelegramAlbum(
+        ownerId,
+        action.slice('album:'.length),
+      );
+    } else if (action === 'keys') {
+      panel = await this.apiKeysPanel(ownerId, setting);
+    } else if (action === 'trash') {
+      panel = await this.trashPanel(ownerId, setting);
     } else if (action === 'policy') {
       panel = this.policyPanel(setting);
     } else if (action === 'upload') {
@@ -461,7 +576,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       panel = this.helpPanel('未知操作。');
     }
 
-    await this.answerCallback(token, callback.id);
     await this.editOrSendPanel(
       token,
       String(chatId),
@@ -487,7 +601,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       }),
       this.prisma.image.groupBy({
         by: ['status'],
-        where: { ownerId },
+        where: { ownerId, uploadedAt: { not: null } },
         _count: { _all: true },
       }),
     ]);
@@ -499,8 +613,13 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       text: [
         'PicVault 控制台',
         '',
+        '实时文字台',
         `${user.name} · ${formatUserPublicId(user.publicId)}`,
         `邮箱：${user.email}`,
+        `轮询：${this.running ? '运行中' : '待命'} · 最近：${
+          this.lastPollAt ? this.formatDateTime(this.lastPollAt) : '暂无'
+        }`,
+        this.lastError ? `错误：${this.lastError}` : '错误：无',
         `容量：${this.formatBytes(Number(user.usedBytes))} / ${this.formatBytes(
           Number(user.quotaBytes),
         )}`,
@@ -533,7 +652,11 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       ].join('\n'),
       keyboard: [
         [
-          { text: '最近图片', callback_data: 'pv:recent' },
+          { text: '刷新', callback_data: 'pv:status' },
+          { text: '图片库', callback_data: 'pv:library' },
+        ],
+        [
+          { text: '集成状态', callback_data: 'pv:integrations' },
           { text: '上传策略', callback_data: 'pv:policy' },
         ],
         [{ text: '返回控制台', callback_data: 'pv:home' }],
@@ -549,6 +672,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       where: {
         ownerId,
         status: { not: ImageStatus.DELETED },
+        uploadedAt: { not: null },
       },
       orderBy: { createdAt: 'desc' },
       take: 5,
@@ -556,11 +680,13 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         id: true,
         title: true,
         originalName: true,
+        mimeType: true,
         sizeBytes: true,
         visibility: true,
         status: true,
         storageKey: true,
         storageProvider: true,
+        thumbKey: true,
         createdAt: true,
       },
     });
@@ -601,6 +727,10 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           { text: '返回控制台', callback_data: 'pv:home' },
         ],
       ],
+      previews: images
+        .map((image) => this.previewForImage(ownerId, image, setting))
+        .filter((preview): preview is TelegramPreview => Boolean(preview))
+        .slice(0, 3),
     };
   }
 
@@ -613,6 +743,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         ownerId,
         status: ImageStatus.READY,
         visibility: { not: Visibility.PRIVATE },
+        uploadedAt: { not: null },
       },
       orderBy: { createdAt: 'desc' },
       select: {
@@ -680,6 +811,474 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           { text: '返回控制台', callback_data: 'pv:home' },
         ],
       ],
+    };
+  }
+
+  private async libraryPanel(
+    ownerId: string,
+    setting: TelegramRuntimeSetting,
+  ): Promise<TelegramPanel> {
+    const images = await this.prisma.image.findMany({
+      where: {
+        ownerId,
+        status: { not: ImageStatus.DELETED },
+        uploadedAt: { not: null },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 8,
+      select: {
+        id: true,
+        title: true,
+        originalName: true,
+        mimeType: true,
+        sizeBytes: true,
+        width: true,
+        height: true,
+        visibility: true,
+        status: true,
+        storageKey: true,
+        storageProvider: true,
+        thumbKey: true,
+        createdAt: true,
+        album: {
+          select: { name: true },
+        },
+      },
+    });
+
+    return {
+      text:
+        images.length > 0
+          ? [
+              '图片库',
+              '',
+              ...images.map((image, index) => {
+                const dimensions =
+                  image.width && image.height
+                    ? ` · ${image.width}x${image.height}`
+                    : '';
+                return (
+                  `${index + 1}. ${image.title || image.originalName}\n` +
+                  `   ${this.statusText(image.status)} · ${this.visibilityText(
+                    image.visibility,
+                  )} · ${this.formatBytes(Number(image.sizeBytes))}${dimensions}\n` +
+                  `   相册：${image.album?.name ?? '未归档'}`
+                );
+              }),
+            ].join('\n')
+          : '图片库\n\n暂无图片。',
+      keyboard: [
+        [
+          { text: '刷新', callback_data: 'pv:library' },
+          {
+            text: '打开图片库',
+            url: new URL('/library', this.publicAppUrl(setting)).toString(),
+          },
+        ],
+        [
+          { text: '搜索', callback_data: 'pv:search' },
+          { text: '复制格式', callback_data: 'pv:links' },
+        ],
+        [{ text: '返回控制台', callback_data: 'pv:home' }],
+      ],
+      previews: images
+        .map((image) => this.previewForImage(ownerId, image, setting))
+        .filter((preview): preview is TelegramPreview => Boolean(preview))
+        .slice(0, 4),
+    };
+  }
+
+  private async searchPanel(
+    ownerId: string,
+    setting: TelegramRuntimeSetting,
+    query: string,
+  ): Promise<TelegramPanel> {
+    const keyword = query.trim();
+    if (!keyword) {
+      return {
+        text: [
+          '搜索',
+          '',
+          '发送 /search 关键词 搜索标题、文件名、描述和标签。',
+          '也可以直接给 Bot 发送关键词。',
+        ].join('\n'),
+        keyboard: [
+          [
+            { text: '图片库', callback_data: 'pv:library' },
+            {
+              text: '打开搜索页',
+              url: new URL('/library', this.publicAppUrl(setting)).toString(),
+            },
+          ],
+          [{ text: '返回控制台', callback_data: 'pv:home' }],
+        ],
+      };
+    }
+
+    const images = await this.prisma.image.findMany({
+      where: {
+        ownerId,
+        status: { not: ImageStatus.DELETED },
+        uploadedAt: { not: null },
+        OR: [
+          { title: { contains: keyword, mode: 'insensitive' } },
+          { originalName: { contains: keyword, mode: 'insensitive' } },
+          { description: { contains: keyword, mode: 'insensitive' } },
+          { tags: { has: keyword } },
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 8,
+      select: {
+        id: true,
+        title: true,
+        originalName: true,
+        mimeType: true,
+        sizeBytes: true,
+        visibility: true,
+        status: true,
+        storageKey: true,
+        storageProvider: true,
+        thumbKey: true,
+        album: {
+          select: { name: true },
+        },
+      },
+    });
+
+    return {
+      text:
+        images.length > 0
+          ? [
+              `搜索：${keyword}`,
+              '',
+              ...images.map(
+                (image, index) =>
+                  `${index + 1}. ${image.title || image.originalName}\n` +
+                  `   ${this.statusText(image.status)} · ${this.visibilityText(
+                    image.visibility,
+                  )} · ${this.formatBytes(Number(image.sizeBytes))}\n` +
+                  `   相册：${image.album?.name ?? '未归档'}`,
+              ),
+            ].join('\n')
+          : `搜索：${keyword}\n\n没有匹配图片。`,
+      keyboard: [
+        [
+          { text: '重新搜索', callback_data: 'pv:search' },
+          {
+            text: '打开图片库',
+            url: new URL(
+              `/library?q=${encodeURIComponent(keyword)}`,
+              this.publicAppUrl(setting),
+            ).toString(),
+          },
+        ],
+        [{ text: '返回控制台', callback_data: 'pv:home' }],
+      ],
+      previews: images
+        .map((image) => this.previewForImage(ownerId, image, setting))
+        .filter((preview): preview is TelegramPreview => Boolean(preview))
+        .slice(0, 4),
+    };
+  }
+
+  private async grabUrlPanel(
+    ownerId: string,
+    setting: TelegramRuntimeSetting,
+    rawUrl: string,
+  ): Promise<TelegramPanel> {
+    const url = rawUrl.trim();
+    if (!url) {
+      return {
+        text: [
+          '链接抓图',
+          '',
+          '发送图片 URL 可直接抓取上传。',
+          '格式：/grab https://example.com/image.jpg',
+        ].join('\n'),
+        keyboard: [
+          [
+            { text: '上传位置', callback_data: 'pv:location' },
+            { text: '上传策略', callback_data: 'pv:policy' },
+          ],
+          [{ text: '返回控制台', callback_data: 'pv:home' }],
+        ],
+      };
+    }
+
+    try {
+      new URL(url);
+    } catch {
+      return {
+        text: '链接抓图\n\nURL 格式不正确，请发送 http 或 https 图片地址。',
+        keyboard: [[{ text: '返回控制台', callback_data: 'pv:home' }]],
+      };
+    }
+
+    try {
+      const image = await this.upload.importUrl(ownerId, {
+        url,
+        albumId: setting.telegramAlbumId ?? undefined,
+        visibility: setting.defaultVisibility,
+      });
+      const displayImage =
+        (await this.waitForImage(ownerId, image.id, 5000)) ?? image;
+      const links = this.publicLinksForImage(displayImage, setting);
+
+      return {
+        text: [
+          '链接抓图完成',
+          '',
+          `文件：${displayImage.originalName}`,
+          `大小：${this.formatBytes(Number(displayImage.sizeBytes))}`,
+          `状态：${this.statusText(displayImage.status)}`,
+          `可见性：${this.visibilityText(displayImage.visibility)}`,
+          this.publicLinkLine(displayImage, setting),
+          links.shareUrl ? `分享页：${links.shareUrl}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        keyboard: [
+          ...(links.imageUrl && links.shareUrl
+            ? [
+                [
+                  { text: '打开图片', url: links.imageUrl },
+                  { text: '分享页', url: links.shareUrl },
+                ],
+              ]
+            : []),
+          [
+            { text: '图片库', callback_data: 'pv:library' },
+            { text: '继续抓图', callback_data: 'pv:grab' },
+          ],
+          [{ text: '返回控制台', callback_data: 'pv:home' }],
+        ],
+        previews: [this.previewForImage(ownerId, displayImage, setting)].filter(
+          (preview): preview is TelegramPreview => Boolean(preview),
+        ),
+      };
+    } catch (error) {
+      return {
+        text: [
+          '链接抓图失败',
+          '',
+          error instanceof Error ? error.message : String(error),
+        ].join('\n'),
+        keyboard: [
+          [
+            { text: '上传策略', callback_data: 'pv:policy' },
+            { text: '返回控制台', callback_data: 'pv:home' },
+          ],
+        ],
+      };
+    }
+  }
+
+  private async integrationPanel(
+    ownerId: string,
+    setting: TelegramRuntimeSetting,
+    chatId: string,
+  ): Promise<TelegramPanel> {
+    const [albums, keys] = await Promise.all([
+      this.prisma.album.count({ where: { ownerId } }),
+      this.prisma.apiKey.count({ where: { userId: ownerId } }),
+    ]);
+
+    return {
+      text: [
+        '集成状态',
+        '',
+        `Telegram：${setting.telegramBotEnabled ? '已启用' : '未启用'} · ${
+          setting.telegramBotToken ? '已连接 Token' : '未配置 Token'
+        }`,
+        `当前 Chat ID：${chatId}`,
+        `Chat 白名单：${
+          setting.telegramAllowedChatIds.length
+            ? setting.telegramAllowedChatIds.join(', ')
+            : '未限制'
+        }`,
+        `API 上传：${setting.apiUpload ? '开启' : '关闭'} · API 密钥 ${keys} 个`,
+        `存储：${setting.storageProvider}`,
+        `相册：${albums} 个`,
+        `站点域名：${this.safePublicAppUrl(setting)}`,
+        `图片域名：${this.safePublicImageBaseUrl(setting)}`,
+      ].join('\n'),
+      keyboard: [
+        [
+          { text: '刷新', callback_data: 'pv:integrations' },
+          { text: 'API 密钥', callback_data: 'pv:keys' },
+        ],
+        [
+          { text: '上传位置', callback_data: 'pv:location' },
+          { text: '站点入口', callback_data: 'pv:site' },
+        ],
+        [{ text: '返回控制台', callback_data: 'pv:home' }],
+      ],
+    };
+  }
+
+  private async uploadLocationPanel(
+    ownerId: string,
+    setting: TelegramRuntimeSetting,
+  ): Promise<TelegramPanel> {
+    const albums = await this.prisma.album.findMany({
+      where: { ownerId },
+      orderBy: { createdAt: 'desc' },
+      take: 8,
+      include: {
+        _count: {
+          select: { images: true },
+        },
+      },
+    });
+    const current = albums.find(
+      (album) => album.id === setting.telegramAlbumId,
+    );
+
+    return {
+      text: [
+        '上传位置',
+        '',
+        `默认相册：${current?.name ?? '未绑定'}`,
+        `默认可见性：${this.visibilityText(setting.defaultVisibility)}`,
+        `单图上限：${this.formatBytes(setting.maxSizeBytes)}`,
+        '',
+        albums.length
+          ? '点击下面的相册可设置为 Telegram 默认上传位置。'
+          : '暂无相册，请先在网页端创建相册。',
+      ].join('\n'),
+      keyboard: [
+        ...albums.slice(0, 6).map((album) => [
+          {
+            text: `${album.name} (${album._count.images})`,
+            callback_data: `pv:album:${album.id}`,
+          },
+        ]),
+        [
+          { text: '不绑定相册', callback_data: 'pv:album:none' },
+          { text: '相册列表', callback_data: 'pv:albums' },
+        ],
+        [
+          { text: '设为公开', callback_data: 'pv:vis:PUBLIC' },
+          { text: '隐藏链接', callback_data: 'pv:vis:UNLISTED' },
+        ],
+        [{ text: '返回控制台', callback_data: 'pv:home' }],
+      ],
+    };
+  }
+
+  private async apiKeysPanel(
+    ownerId: string,
+    setting: TelegramRuntimeSetting,
+  ): Promise<TelegramPanel> {
+    const [keys, total] = await Promise.all([
+      this.prisma.apiKey.findMany({
+        where: { userId: ownerId },
+        orderBy: { createdAt: 'desc' },
+        take: 8,
+        select: {
+          name: true,
+          lastUsedAt: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.apiKey.count({ where: { userId: ownerId } }),
+    ]);
+
+    return {
+      text: [
+        'API 密钥',
+        '',
+        `API 上传：${setting.apiUpload ? '开启' : '关闭'}`,
+        `密钥数量：${total}`,
+        '',
+        keys.length
+          ? keys
+              .map(
+                (key, index) =>
+                  `${index + 1}. ${key.name}\n` +
+                  `   创建：${this.formatDateTime(key.createdAt)}\n` +
+                  `   最近使用：${
+                    key.lastUsedAt
+                      ? this.formatDateTime(key.lastUsedAt)
+                      : '从未'
+                  }`,
+              )
+              .join('\n')
+          : '暂无 API 密钥。',
+      ].join('\n'),
+      keyboard: [
+        [
+          { text: '刷新', callback_data: 'pv:keys' },
+          {
+            text: '打开设置',
+            url: new URL('/settings', this.publicAppUrl(setting)).toString(),
+          },
+        ],
+        [
+          { text: '集成状态', callback_data: 'pv:integrations' },
+          { text: '返回控制台', callback_data: 'pv:home' },
+        ],
+      ],
+    };
+  }
+
+  private async trashPanel(
+    ownerId: string,
+    setting: TelegramRuntimeSetting,
+  ): Promise<TelegramPanel> {
+    const images = await this.prisma.image.findMany({
+      where: {
+        ownerId,
+        status: ImageStatus.DELETED,
+        uploadedAt: { not: null },
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 8,
+      select: {
+        id: true,
+        title: true,
+        originalName: true,
+        mimeType: true,
+        sizeBytes: true,
+        visibility: true,
+        status: true,
+        storageKey: true,
+        storageProvider: true,
+        thumbKey: true,
+        updatedAt: true,
+      },
+    });
+
+    return {
+      text:
+        images.length > 0
+          ? [
+              '回收站',
+              '',
+              ...images.map(
+                (image, index) =>
+                  `${index + 1}. ${image.title || image.originalName}\n` +
+                  `   ${this.formatBytes(Number(image.sizeBytes))} · 删除于 ${this.formatDateTime(
+                    image.updatedAt,
+                  )}`,
+              ),
+            ].join('\n')
+          : '回收站\n\n暂无已删除图片。',
+      keyboard: [
+        [
+          { text: '刷新', callback_data: 'pv:trash' },
+          {
+            text: '打开回收站',
+            url: new URL('/trash', this.publicAppUrl(setting)).toString(),
+          },
+        ],
+        [{ text: '返回控制台', callback_data: 'pv:home' }],
+      ],
+      previews: images
+        .map((image) => this.previewForImage(ownerId, image, setting))
+        .filter((preview): preview is TelegramPreview => Boolean(preview))
+        .slice(0, 4),
     };
   }
 
@@ -831,11 +1430,21 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         'PicVault Telegram 控制台',
         '',
         '发送图片：直接上传到 PicVault',
+        '发送链接：抓取远程图片',
+        '发送关键词：搜索图片库',
         '/panel：打开控制台',
+        '/console：实时文字台',
+        '/library：图片库和图片预览',
+        '/search 关键词：搜索图片',
+        '/grab URL：链接抓图',
         '/status：查看状态和容量',
+        '/integrations：查看集成状态',
         '/recent：查看最近图片',
         '/links：复制最近公开图片链接格式',
         '/albums：查看相册',
+        '/location：设置 Telegram 上传位置',
+        '/keys：查看 API 密钥',
+        '/trash：查看回收站',
         '/upload：查看上传说明',
         '/policy：查看上传策略',
         '/public /private /unlisted：切换默认可见性',
@@ -862,26 +1471,73 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     return this.policyPanel(setting);
   }
 
+  private async updateTelegramAlbum(
+    ownerId: string,
+    albumId: string,
+  ): Promise<TelegramPanel> {
+    if (albumId === 'none') {
+      await this.settings.update(ownerId, { telegramAlbumId: null });
+      return this.uploadLocationPanel(
+        ownerId,
+        await this.settings.getRuntime(ownerId),
+      );
+    }
+
+    const album = await this.prisma.album.findFirst({
+      where: { id: albumId, ownerId },
+      select: { id: true },
+    });
+    if (!album) {
+      return {
+        text: '上传位置\n\n相册不存在或无权访问。',
+        keyboard: [[{ text: '返回', callback_data: 'pv:location' }]],
+      };
+    }
+
+    await this.settings.update(ownerId, { telegramAlbumId: album.id });
+    return this.uploadLocationPanel(
+      ownerId,
+      await this.settings.getRuntime(ownerId),
+    );
+  }
+
   private async imageStats(ownerId: string) {
     const [total, ready, pending, failed, deleted, user] =
       await this.prisma.$transaction([
         this.prisma.image.count({
-          where: { ownerId, status: { not: ImageStatus.DELETED } },
+          where: {
+            ownerId,
+            status: { not: ImageStatus.DELETED },
+            uploadedAt: { not: null },
+          },
         }),
         this.prisma.image.count({
-          where: { ownerId, status: ImageStatus.READY },
+          where: {
+            ownerId,
+            status: ImageStatus.READY,
+            uploadedAt: { not: null },
+          },
         }),
         this.prisma.image.count({
           where: {
             ownerId,
             status: { in: [ImageStatus.PENDING, ImageStatus.PROCESSING] },
+            uploadedAt: { not: null },
           },
         }),
         this.prisma.image.count({
-          where: { ownerId, status: ImageStatus.FAILED },
+          where: {
+            ownerId,
+            status: ImageStatus.FAILED,
+            uploadedAt: { not: null },
+          },
         }),
         this.prisma.image.count({
-          where: { ownerId, status: ImageStatus.DELETED },
+          where: {
+            ownerId,
+            status: ImageStatus.DELETED,
+            uploadedAt: { not: null },
+          },
         }),
         this.prisma.user.findUniqueOrThrow({
           where: { id: ownerId },
@@ -904,17 +1560,28 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     return [
       [
         { text: '状态', callback_data: 'pv:status' },
-        { text: '最近图片', callback_data: 'pv:recent' },
+        { text: '图片库', callback_data: 'pv:library' },
       ],
       [
-        { text: '复制格式', callback_data: 'pv:links' },
-        { text: '上传说明', callback_data: 'pv:upload' },
+        { text: '搜索', callback_data: 'pv:search' },
+        { text: '抓图', callback_data: 'pv:grab' },
       ],
       [
+        { text: '位置', callback_data: 'pv:location' },
         { text: '相册', callback_data: 'pv:albums' },
-        { text: '上传策略', callback_data: 'pv:policy' },
       ],
-      [{ text: '站点入口', callback_data: 'pv:site' }],
+      [
+        { text: '密钥', callback_data: 'pv:keys' },
+        { text: '回收站', callback_data: 'pv:trash' },
+      ],
+      [
+        { text: '集成', callback_data: 'pv:integrations' },
+        { text: '链接', callback_data: 'pv:links' },
+      ],
+      [
+        { text: '刷新', callback_data: 'pv:refresh' },
+        { text: '站点', callback_data: 'pv:site' },
+      ],
     ];
   }
 
@@ -937,6 +1604,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           }
         : undefined,
     });
+    await this.sendPreviews(token, chatId, panel.previews);
   }
 
   private async editOrSendPanel(
@@ -959,7 +1627,10 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       });
     } catch {
       await this.sendPanel(token, chatId, panel);
+      return;
     }
+
+    await this.sendPreviews(token, chatId, panel.previews);
   }
 
   private async answerCallback(
@@ -979,6 +1650,89 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     await this.telegram(token, 'answerCallbackQuery', payload);
   }
 
+  private async sendPreviews(
+    token: string,
+    chatId: string,
+    previews?: TelegramPreview[],
+  ) {
+    if (!previews?.length) {
+      return;
+    }
+
+    for (const preview of previews.slice(0, 4)) {
+      try {
+        await this.sendPreview(token, chatId, preview);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Telegram preview failed: ${message}`);
+      }
+    }
+  }
+
+  private async sendPreview(
+    token: string,
+    chatId: string,
+    preview: TelegramPreview,
+  ) {
+    const caption = [
+      preview.title,
+      preview.shareUrl ? `分享页：${preview.shareUrl}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n')
+      .slice(0, 1024);
+    const replyMarkup = preview.shareUrl
+      ? {
+          inline_keyboard: [[{ text: '分享页', url: preview.shareUrl }]],
+        }
+      : undefined;
+
+    if (preview.imageUrl) {
+      try {
+        await this.telegram(token, 'sendPhoto', {
+          chat_id: chatId,
+          photo: preview.imageUrl,
+          caption,
+          reply_markup: replyMarkup,
+        });
+        return;
+      } catch {
+        // Fall back to uploading the stored object when Telegram cannot fetch
+        // the public URL, which also covers old/internal stored links.
+      }
+    }
+
+    const setting = await this.settings.getRuntime(preview.ownerId);
+    const buffer = await this.storage.getObjectBuffer(preview.storageKey, {
+      ...setting,
+      storageProvider: preview.storageProvider,
+    });
+    if (!buffer.length) {
+      return;
+    }
+
+    const sendAsPhoto =
+      buffer.length <= 9 * 1024 * 1024 && preview.contentType !== 'image/gif';
+    const form = new FormData();
+    form.append('chat_id', chatId);
+    form.append('caption', caption);
+    if (replyMarkup) {
+      form.append('reply_markup', JSON.stringify(replyMarkup));
+    }
+
+    const filename =
+      preview.storageKey.split('/').pop() ||
+      `preview.${this.extensionForContentType(preview.contentType)}`;
+    const blob = new Blob([buffer], { type: preview.contentType });
+    if (sendAsPhoto) {
+      form.append('photo', blob, filename);
+      await this.telegramMultipart(token, 'sendPhoto', form);
+    } else {
+      form.append('document', blob, filename);
+      await this.telegramMultipart(token, 'sendDocument', form);
+    }
+  }
+
   private async telegram<T = unknown>(
     token: string,
     method: string,
@@ -990,6 +1744,28 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(30000),
+      },
+    );
+
+    const data = (await response.json()) as TelegramResponse<T>;
+    if (!response.ok || !data.ok) {
+      throw new Error(data.description || `Telegram ${method} failed`);
+    }
+
+    return data.result;
+  }
+
+  private async telegramMultipart<T = unknown>(
+    token: string,
+    method: string,
+    body: FormData,
+  ) {
+    const response = await fetch(
+      `https://api.telegram.org/bot${token}/${method}`,
+      {
+        method: 'POST',
+        body,
         signal: AbortSignal.timeout(30000),
       },
     );
@@ -1075,6 +1851,90 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private previewForImage(
+    ownerId: string,
+    image: {
+      id?: string;
+      title: string;
+      originalName: string;
+      mimeType: string;
+      storageKey: string;
+      storageProvider: StorageProvider;
+      thumbKey?: string | null;
+      visibility: Visibility;
+      status: ImageStatus;
+    },
+    setting?: TelegramRuntimeSetting,
+  ): TelegramPreview | null {
+    const key = image.thumbKey || image.storageKey;
+    const contentType = image.thumbKey ? 'image/webp' : image.mimeType;
+    const links = this.publicLinksForImage(image, setting);
+
+    return {
+      ownerId,
+      title: image.title || image.originalName,
+      storageKey: key,
+      storageProvider: image.storageProvider,
+      contentType,
+      imageUrl: links.imageUrl || undefined,
+      shareUrl: links.shareUrl || undefined,
+    };
+  }
+
+  private async waitForImage(
+    ownerId: string,
+    imageId: string,
+    timeoutMs: number,
+  ) {
+    const startedAt = Date.now();
+    let lastImage: {
+      id: string;
+      title: string;
+      originalName: string;
+      mimeType: string;
+      sizeBytes: bigint | number;
+      visibility: Visibility;
+      status: ImageStatus;
+      storageKey: string;
+      storageProvider: StorageProvider;
+      thumbKey: string | null;
+    } | null = null;
+
+    do {
+      const image = await this.prisma.image.findFirst({
+        where: { id: imageId, ownerId },
+        select: {
+          id: true,
+          title: true,
+          originalName: true,
+          mimeType: true,
+          sizeBytes: true,
+          visibility: true,
+          status: true,
+          storageKey: true,
+          storageProvider: true,
+          thumbKey: true,
+        },
+      });
+
+      if (!image) {
+        return lastImage;
+      }
+      lastImage = image;
+      if (
+        image.status === ImageStatus.READY ||
+        image.status === ImageStatus.FAILED ||
+        image.status === ImageStatus.PENDING
+      ) {
+        return image;
+      }
+
+      await this.delay(500);
+    } while (Date.now() - startedAt < timeoutMs);
+
+    return lastImage;
+  }
+
   private imagePublicUrl(
     image: { storageKey: string; storageProvider: StorageProvider },
     setting?: TelegramUrlSetting,
@@ -1087,13 +1947,12 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   }
 
   private publicAppUrl(setting?: TelegramUrlSetting) {
-    const configured =
-      setting?.appPublicUrl?.trim() ||
-      this.config.get<string>('APP_PUBLIC_URL')?.trim() ||
-      setting?.publicBaseUrl?.trim() ||
-      this.config.get<string>('PUBLIC_IMAGE_BASE_URL')?.trim();
-
-    return this.normalizePublicBaseUrl(configured);
+    return this.firstPublicBaseUrl([
+      { value: setting?.appPublicUrl },
+      { value: this.config.get<string>('APP_PUBLIC_URL') },
+      { value: setting?.publicBaseUrl },
+      { value: this.config.get<string>('PUBLIC_IMAGE_BASE_URL') },
+    ]);
   }
 
   private safePublicAppUrl(setting?: TelegramUrlSetting) {
@@ -1105,15 +1964,29 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   }
 
   private publicImageBaseUrl(setting?: TelegramUrlSetting) {
-    const configured =
-      setting?.publicBaseUrl?.trim() ||
-      (setting?.storageProvider === StorageProvider.LOCAL
-        ? '/api/public/files'
-        : this.config.get<string>('PUBLIC_IMAGE_BASE_URL')?.trim()) ||
+    const appPublicUrl =
       setting?.appPublicUrl?.trim() ||
       this.config.get<string>('APP_PUBLIC_URL')?.trim();
 
-    return this.normalizePublicBaseUrl(configured, '/api/public/files');
+    return this.firstPublicBaseUrl(
+      [
+        {
+          value: setting?.publicBaseUrl,
+          fallbackPath: '/api/public/files',
+          relativeBaseUrl: appPublicUrl,
+        },
+        {
+          value: this.config.get<string>('PUBLIC_IMAGE_BASE_URL'),
+          fallbackPath: '/api/public/files',
+          relativeBaseUrl: appPublicUrl,
+        },
+        {
+          value: '/api/public/files',
+          relativeBaseUrl: appPublicUrl,
+        },
+      ],
+      '/api/public/files',
+    );
   }
 
   private safePublicImageBaseUrl(setting?: TelegramUrlSetting) {
@@ -1124,7 +1997,11 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private normalizePublicBaseUrl(value?: string | null, fallbackPath = '') {
+  private normalizePublicBaseUrl(
+    value?: string | null,
+    fallbackPath = '',
+    relativeBaseUrl?: string | null,
+  ) {
     const raw = value?.trim();
     if (!raw) {
       throw new Error(
@@ -1134,6 +2011,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
     if (raw.startsWith('/')) {
       const appUrl =
+        relativeBaseUrl?.trim() ||
         this.config.get<string>('APP_PUBLIC_URL')?.trim() ||
         this.config.get<string>('PUBLIC_IMAGE_BASE_URL')?.trim();
       if (!appUrl || appUrl.startsWith('/')) {
@@ -1159,6 +2037,39 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     return parsed.toString().replace(/\/$/, '');
   }
 
+  private firstPublicBaseUrl(
+    candidates: Array<{
+      value?: string | null;
+      fallbackPath?: string;
+      relativeBaseUrl?: string | null;
+    }>,
+    fallbackPath = '',
+  ) {
+    let lastError: unknown;
+    for (const candidate of candidates) {
+      if (!candidate.value?.trim()) {
+        continue;
+      }
+
+      try {
+        return this.normalizePublicBaseUrl(
+          candidate.value,
+          candidate.fallbackPath ?? fallbackPath,
+          candidate.relativeBaseUrl,
+        );
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (lastError instanceof Error) {
+      throw lastError;
+    }
+    throw new Error(
+      'Telegram 需要公网访问域名：请在控制中心设置站点公开域名或图片公开域名',
+    );
+  }
+
   private formatBytes(bytes = 0) {
     if (bytes <= 0) return '0 B';
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -1170,6 +2081,29 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${
       units[index]
     }`;
+  }
+
+  private formatDateTime(value: Date) {
+    return value.toLocaleString('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      hour12: false,
+    });
+  }
+
+  private extensionForContentType(contentType: string) {
+    return (
+      {
+        'image/jpeg': 'jpg',
+        'image/png': 'png',
+        'image/webp': 'webp',
+        'image/gif': 'gif',
+        'image/avif': 'avif',
+      }[contentType] ?? 'jpg'
+    );
+  }
+
+  private delay(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private visibilityText(value: Visibility) {
