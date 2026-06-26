@@ -39,6 +39,12 @@ import { ImportUrlDto } from './dto/import-url.dto';
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 12);
 
 type RuntimeUploadSetting = Awaited<ReturnType<SettingsService['getRuntime']>>;
+type ImageInspection = {
+  contentType: string;
+  width: number;
+  height: number;
+  format: string;
+};
 
 @Injectable()
 export class UploadService implements OnModuleInit, OnModuleDestroy {
@@ -150,8 +156,8 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.inspectImageFile(
         draft.tempPath,
-        image.mimeType,
         BigInt(image.sizeBytes),
+        image.mimeType,
       );
       await draft.commit();
     } catch (error) {
@@ -159,7 +165,11 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
       throw error;
     }
 
-    return { ok: true };
+    return this.finalizeUploadedObject(
+      ownerId,
+      { ...image, storageKey: key },
+      setting,
+    );
   }
 
   async prepareLocalObjectUpload(ownerId: string, key: string) {
@@ -199,51 +209,104 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
       throw new ForbiddenException('Image is not accessible');
     }
 
-    if (image.status !== ImageStatus.PENDING || image.uploadedAt) {
+    if (image.uploadedAt) {
+      return {
+        ...image,
+        sizeBytes: Number(image.sizeBytes),
+      };
+    }
+
+    if (image.status !== ImageStatus.PENDING) {
       throw new BadRequestException('Upload has already been completed');
     }
 
     const setting = await this.settings.getRuntime(ownerId);
     await this.verifyStoredObject(image, this.toStorageSetting(setting));
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const claimed = await tx.image.updateMany({
-        where: {
-          id,
-          ownerId,
-          status: ImageStatus.PENDING,
-          uploadedAt: null,
-        },
-        data: {
-          status: setting.uploadAudit
-            ? ImageStatus.PENDING
-            : ImageStatus.PROCESSING,
-          uploadedAt: new Date(),
-          checksum: dto.checksum,
-        },
+    return this.finalizeUploadedObject(ownerId, image, setting, dto.checksum);
+  }
+
+  private async finalizeUploadedObject(
+    ownerId: string,
+    image: {
+      id: string;
+      ownerId: string;
+      sizeBytes: bigint | number;
+      storageKey: string;
+      storageProvider: StorageProvider;
+    },
+    setting: RuntimeUploadSetting,
+    checksum?: string,
+  ) {
+    const sizeBytes =
+      typeof image.sizeBytes === 'bigint'
+        ? image.sizeBytes
+        : BigInt(image.sizeBytes);
+
+    try {
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const claimed = await tx.image.updateMany({
+          where: {
+            id: image.id,
+            ownerId,
+            status: ImageStatus.PENDING,
+            uploadedAt: null,
+          },
+          data: {
+            status: setting.uploadAudit
+              ? ImageStatus.PENDING
+              : ImageStatus.PROCESSING,
+            uploadedAt: new Date(),
+            checksum,
+          },
+        });
+
+        if (claimed.count !== 1) {
+          throw new BadRequestException('Upload has already been completed');
+        }
+
+        await this.incrementUsageWithinQuota(tx, ownerId, sizeBytes);
+
+        return tx.image.findUniqueOrThrow({
+          where: { id: image.id },
+        });
       });
 
-      if (claimed.count !== 1) {
-        throw new BadRequestException('Upload has already been completed');
+      if (!setting.uploadAudit) {
+        await this.processingQueue.add('process-image', {
+          imageId: updated.id,
+          storageKey: updated.storageKey,
+        });
       }
 
-      await this.incrementUsageWithinQuota(tx, ownerId, image.sizeBytes);
-
-      return tx.image.findUniqueOrThrow({
-        where: { id },
+      return {
+        ...updated,
+        sizeBytes: Number(updated.sizeBytes),
+      };
+    } catch (error) {
+      const current = await this.prisma.image.findUnique({
+        where: { id: image.id },
+        select: { uploadedAt: true },
       });
-    });
 
-    if (!setting.uploadAudit) {
-      await this.processingQueue.add('process-image', {
-        imageId: updated.id,
-        storageKey: updated.storageKey,
-      });
+      if (!current?.uploadedAt) {
+        await this.storage
+          .deleteObject(image.storageKey, {
+            ...this.toStorageSetting(setting),
+            storageProvider: image.storageProvider,
+          })
+          .catch(() => undefined);
+        await this.prisma.image.updateMany({
+          where: {
+            id: image.id,
+            status: ImageStatus.PENDING,
+            uploadedAt: null,
+          },
+          data: { status: ImageStatus.FAILED },
+        });
+      }
+
+      throw error;
     }
-
-    return {
-      ...updated,
-      sizeBytes: Number(updated.sizeBytes),
-    };
   }
 
   async importUrl(ownerId: string, dto: ImportUrlDto) {
@@ -261,25 +324,6 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
     }
 
     const remote = await this.downloadImportUrl(dto.url, setting.maxSizeBytes);
-    if (remote.contentLength) {
-      this.validateUploadPolicy(
-        remote.contentType,
-        remote.contentLength,
-        setting,
-      );
-    }
-
-    this.validateUploadPolicy(
-      remote.contentType,
-      remote.buffer.length,
-      setting,
-    );
-    await this.inspectImageBuffer(
-      remote.buffer,
-      remote.contentType,
-      BigInt(remote.buffer.length),
-    );
-
     const filename =
       dto.filename?.trim() ||
       this.filenameFromUrl(dto.url) ||
@@ -307,26 +351,26 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
     },
   ) {
     const setting = input.setting ?? (await this.settings.getRuntime(ownerId));
-    this.validateUploadPolicy(input.contentType, input.body.length, setting);
-    await this.inspectImageBuffer(
+    const inspection = await this.inspectImageBuffer(
       input.body,
-      input.contentType,
       BigInt(input.body.length),
     );
+    const contentType = inspection.contentType;
+    this.validateUploadPolicy(contentType, input.body.length, setting);
     await this.ensureQuota(ownerId, input.body.length);
 
     if (input.albumId) {
       await this.ensureAlbum(ownerId, input.albumId);
     }
 
-    const extension = this.resolveExtension(input.contentType);
+    const extension = this.resolveExtension(contentType);
     const key = this.createStorageKey(ownerId, extension);
     const storageSetting = this.toStorageSetting(setting);
 
     await this.storage.putObject({
       key,
       body: input.body,
-      contentType: input.contentType,
+      contentType,
       setting: storageSetting,
     });
 
@@ -344,7 +388,7 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
             albumId: input.albumId || undefined,
             title: input.filename.replace(/\.[^/.]+$/, ''),
             originalName: input.filename,
-            mimeType: input.contentType,
+            mimeType: contentType,
             extension,
             sizeBytes: input.body.length,
             storageProvider: storageSetting.storageProvider,
@@ -398,15 +442,15 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
       if (image.storageProvider === StorageProvider.LOCAL) {
         await this.inspectImageFile(
           this.storage.getLocalObjectPath(image.storageKey, storageSetting),
-          image.mimeType,
           image.sizeBytes,
+          image.mimeType,
         );
       } else {
         const buffer = await this.storage.getObjectBuffer(
           image.storageKey,
           storageSetting,
         );
-        await this.inspectImageBuffer(buffer, image.mimeType, image.sizeBytes);
+        await this.inspectImageBuffer(buffer, image.sizeBytes, image.mimeType);
       }
     } catch (error) {
       await this.storage
@@ -430,9 +474,9 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
 
   private async inspectImageFile(
     filePath: string,
-    expectedContentType: string,
     expectedSizeBytes: bigint,
-  ) {
+    expectedContentType?: string,
+  ): Promise<ImageInspection> {
     const file = await stat(filePath);
     if (file.size !== Number(expectedSizeBytes)) {
       throw new BadRequestException('Uploaded object size does not match');
@@ -445,14 +489,14 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Uploaded object is not a readable image');
     }
 
-    this.validateImageMetadata(metadata, expectedContentType);
+    return this.validateImageMetadata(metadata, expectedContentType);
   }
 
   private async inspectImageBuffer(
     buffer: Buffer,
-    expectedContentType: string,
     expectedSizeBytes: bigint,
-  ) {
+    expectedContentType?: string,
+  ): Promise<ImageInspection> {
     if (buffer.length !== Number(expectedSizeBytes)) {
       throw new BadRequestException('Uploaded object size does not match');
     }
@@ -464,19 +508,23 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Uploaded object is not a readable image');
     }
 
-    this.validateImageMetadata(metadata, expectedContentType);
+    return this.validateImageMetadata(metadata, expectedContentType);
   }
 
   private validateImageMetadata(
     metadata: sharp.Metadata,
-    expectedContentType: string,
-  ) {
+    expectedContentType?: string,
+  ): ImageInspection {
     if (!metadata.width || !metadata.height || !metadata.format) {
       throw new BadRequestException('Uploaded object is not a readable image');
     }
 
     const actualContentType = this.contentTypeFromSharpFormat(metadata.format);
-    if (!actualContentType || actualContentType !== expectedContentType) {
+    if (!actualContentType) {
+      throw new BadRequestException('Uploaded object is not a readable image');
+    }
+
+    if (expectedContentType && actualContentType !== expectedContentType) {
       throw new BadRequestException('Uploaded object type does not match');
     }
 
@@ -484,6 +532,13 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
     if (metadata.width * metadata.height > maxPixels) {
       throw new BadRequestException('Image dimensions are too large');
     }
+
+    return {
+      contentType: actualContentType,
+      width: metadata.width,
+      height: metadata.height,
+      format: metadata.format,
+    };
   }
 
   private validateUploadPolicy(

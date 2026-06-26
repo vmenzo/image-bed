@@ -63,6 +63,7 @@ const remoteUrls = ref('');
 const remoteFilename = ref('');
 const setting = ref<UploadPolicy | null>(null);
 const outputFormat = ref<'url' | 'markdown' | 'html' | 'bbcode'>('url');
+const dragDepth = ref(0);
 const form = reactive({
   albumId: '',
   visibility: 'PRIVATE' as Visibility,
@@ -83,6 +84,7 @@ const successItems = computed(() => uploadResults.value);
 const failedItems = computed(() =>
   queue.value.filter((item) => item.status === 'failed'),
 );
+const isDraggingFiles = computed(() => dragDepth.value > 0);
 const totalBytes = computed(() =>
   queue.value.reduce((sum, item) => sum + item.size, 0),
 );
@@ -100,6 +102,7 @@ const storageTargetLabel = computed(() =>
 );
 const autoRemoveTimers = new Map<string, number>();
 const progressTimers = new Map<string, number>();
+const processingTimers = new Map<string, number>();
 const maxConcurrentUploads = 3;
 
 function makeId() {
@@ -149,6 +152,13 @@ function stopProgress(id: string) {
   if (!timer) return;
   window.clearInterval(timer);
   progressTimers.delete(id);
+}
+
+function stopProcessingDelay(id: string) {
+  const timer = processingTimers.get(id);
+  if (!timer) return;
+  window.clearTimeout(timer);
+  processingTimers.delete(id);
 }
 
 function startProgress(item: QueueItem, target: number, intervalMs = 500) {
@@ -226,22 +236,53 @@ async function runLocalUpload(item: QueueItem) {
   item.status = 'uploading';
   setProgress(item, 22);
   startProgress(item, 82, 700);
-  await putObject(signed.uploadUrl, item.file, signed.headers, (percent) => {
-    setProgress(item, percent * 0.66 + 22);
-  }).finally(() => stopProgress(item.id));
+  const uploaded = await putObject(
+    signed.uploadUrl,
+    item.file,
+    signed.headers,
+    (percent) => {
+      setProgress(item, percent * 0.66 + 22);
+    },
+  ).finally(() => stopProgress(item.id));
 
-  item.status = 'processing';
-  setProgress(item, 90);
-  startProgress(item, 96, 700);
-  const image = await completeUploadApi(signed.imageId).finally(() =>
-    stopProgress(item.id),
-  );
-  item.status = 'success';
-  item.progress = 100;
+  const image =
+    'id' in uploaded
+      ? uploaded
+      : await completeUploadApi(signed.imageId).finally(() =>
+          stopProgress(item.id),
+        );
+
+  item.status = image.status === 'PROCESSING' ? 'processing' : 'success';
+  setProgress(item, item.status === 'processing' ? 96 : 100);
+  if (item.status === 'processing') {
+    startProgress(item, 99, 700);
+  }
+
   item.url =
-    image.status === 'READY' && image.visibility !== 'PRIVATE'
-      ? toAbsoluteUrl(image.publicUrl)
+    item.visibility !== 'PRIVATE'
+      ? toAbsoluteUrl(image.publicUrl || signed.publicUrl)
       : '';
+  if (item.status === 'processing') {
+    const timer = window.setTimeout(() => {
+      processingTimers.delete(item.id);
+      if (
+        !queue.value.some((current) => current.id === item.id) ||
+        item.status !== 'processing'
+      ) {
+        return;
+      }
+
+      stopProgress(item.id);
+      item.status = 'success';
+      item.progress = 100;
+      rememberResult(item);
+      scheduleAutoRemove(item);
+    }, 1200);
+    processingTimers.set(item.id, timer);
+    return;
+  }
+
+  item.progress = 100;
   rememberResult(item);
   scheduleAutoRemove(item);
 }
@@ -367,6 +408,7 @@ async function importRemoteUrls() {
 
 async function retry(item: QueueItem) {
   stopProgress(item.id);
+  stopProcessingDelay(item.id);
   uploadResults.value = uploadResults.value.filter(
     (result) => result.id !== item.id,
   );
@@ -377,6 +419,7 @@ async function retry(item: QueueItem) {
 
 function removeItem(id: string) {
   stopProgress(id);
+  stopProcessingDelay(id);
   const timer = autoRemoveTimers.get(id);
   if (timer) {
     window.clearTimeout(timer);
@@ -389,6 +432,7 @@ function clearFinished() {
   for (const item of queue.value) {
     if (['success', 'failed'].includes(item.status)) {
       stopProgress(item.id);
+      stopProcessingDelay(item.id);
       const timer = autoRemoveTimers.get(item.id);
       if (timer) {
         window.clearTimeout(timer);
@@ -420,6 +464,40 @@ async function handlePaste(event: ClipboardEvent) {
   ElMessage.success(`已从剪贴板上传 ${files.length} 张图片`);
 }
 
+function hasDraggedFiles(event: DragEvent) {
+  return Array.from(event.dataTransfer?.types ?? []).includes('Files');
+}
+
+function handleDragEnter(event: DragEvent) {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  dragDepth.value += 1;
+}
+
+function handleDragOver(event: DragEvent) {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'copy';
+  }
+}
+
+function handleDragLeave(event: DragEvent) {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  dragDepth.value = Math.max(0, dragDepth.value - 1);
+}
+
+async function handleDrop(event: DragEvent) {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  dragDepth.value = 0;
+
+  const files = Array.from(event.dataTransfer?.files ?? []);
+  if (!files.length) return;
+  await enqueueFiles(files);
+}
+
 function statusType(status: QueueStatus) {
   if (status === 'success') return 'success';
   if (status === 'failed') return 'danger';
@@ -448,23 +526,41 @@ onMounted(async () => {
   form.visibility = settingData.defaultVisibility;
   form.storageProvider = settingData.storageProvider;
   window.addEventListener('paste', handlePaste);
+  window.addEventListener('dragenter', handleDragEnter);
+  window.addEventListener('dragover', handleDragOver);
+  window.addEventListener('dragleave', handleDragLeave);
+  window.addEventListener('drop', handleDrop);
 });
 
 onUnmounted(() => {
   window.removeEventListener('paste', handlePaste);
+  window.removeEventListener('dragenter', handleDragEnter);
+  window.removeEventListener('dragover', handleDragOver);
+  window.removeEventListener('dragleave', handleDragLeave);
+  window.removeEventListener('drop', handleDrop);
   for (const timer of autoRemoveTimers.values()) {
     window.clearTimeout(timer);
   }
   for (const timer of progressTimers.values()) {
     window.clearInterval(timer);
   }
+  for (const timer of processingTimers.values()) {
+    window.clearTimeout(timer);
+  }
   autoRemoveTimers.clear();
   progressTimers.clear();
+  processingTimers.clear();
 });
 </script>
 
 <template>
   <div class="upload-workbench">
+    <div v-if="isDraggingFiles" class="drop-overlay">
+      <div>
+        <el-icon><UploadFilled /></el-icon>
+        <strong>松开上传图片</strong>
+      </div>
+    </div>
     <section class="upload-main">
       <el-card shadow="never" class="upload-card">
         <template #header>

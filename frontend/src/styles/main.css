@@ -743,6 +743,38 @@ button {
   min-height: 260px;
 }
 
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2500;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.46);
+  pointer-events: none;
+}
+
+.drop-overlay > div {
+  display: grid;
+  gap: 12px;
+  width: min(360px, 100%);
+  min-height: 180px;
+  place-items: center;
+  border: 2px dashed #bfdbfe;
+  border-radius: 8px;
+  color: #ffffff;
+  background: rgba(37, 99, 235, 0.84);
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.28);
+}
+
+.drop-overlay .el-icon {
+  font-size: 36px;
+}
+
+.drop-overlay strong {
+  font-size: 18px;
+}
+
 .remote-import {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(180px, 0.6fr) auto;

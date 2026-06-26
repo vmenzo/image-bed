@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ImageStatus, StorageProvider, Visibility } from '@prisma/client';
+import { lookup as lookupMime } from 'mime-types';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { UploadService } from '../upload/upload.service';
@@ -407,15 +408,41 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    if (message.document?.mime_type?.startsWith('image/')) {
+    if (message.document) {
+      const contentType = this.imageContentTypeForDocument(
+        message.document.mime_type,
+        message.document.file_name,
+      );
+      if (!contentType) {
+        return null;
+      }
+
       return {
         fileId: message.document.file_id,
-        filename: message.document.file_name || `${Date.now()}.jpg`,
-        contentType: message.document.mime_type,
+        filename:
+          message.document.file_name ||
+          `${Date.now()}.${this.extensionForContentType(contentType)}`,
+        contentType,
       };
     }
 
     return null;
+  }
+
+  private imageContentTypeForDocument(mimeType?: string, filename?: string) {
+    const normalized = mimeType?.split(';')[0].trim().toLowerCase();
+    if (normalized?.startsWith('image/')) {
+      return normalized;
+    }
+
+    if (!filename) {
+      return null;
+    }
+
+    const detected = lookupMime(filename);
+    return typeof detected === 'string' && detected.startsWith('image/')
+      ? detected
+      : null;
   }
 
   private async handleTextCommand(

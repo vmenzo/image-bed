@@ -58,6 +58,7 @@ export function putObject(
         onUploadProgress(Math.round((event.loaded / event.total) * 100));
       },
     })
+    .then((response) => response.data as ImageItem | { ok: boolean })
     .catch((error) => {
       const rawMessage =
         error.response?.data?.message ?? error.message ?? '上传失败';
