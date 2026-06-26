@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Param,
@@ -51,25 +50,10 @@ export class UploadController {
     @Req() request: Request,
   ) {
     const key = decodeURIComponent(params.key);
-    const target = await this.upload.prepareLocalObjectUpload(user.id, key);
-    const chunks: Buffer[] = [];
-    let total = 0;
-
-    for await (const chunk of request) {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      total += buffer.length;
-
-      if (total > target.sizeBytes) {
-        throw new BadRequestException('Uploaded object size does not match');
-      }
-
-      chunks.push(buffer);
-    }
-
-    return this.upload.uploadObject(
+    return this.upload.uploadObjectStream(
       user.id,
       key,
-      Buffer.concat(chunks),
+      request,
       request.headers['content-type']?.split(';')[0] ?? '',
     );
   }

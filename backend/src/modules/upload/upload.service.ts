@@ -18,6 +18,7 @@ import {
 } from '@prisma/client';
 import sharp = require('sharp');
 import { lookup as lookupDns } from 'node:dns/promises';
+import { stat } from 'node:fs/promises';
 import {
   request as httpRequest,
   type IncomingHttpHeaders,
@@ -121,39 +122,41 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async uploadObject(
+  async uploadObjectStream(
     ownerId: string,
     key: string,
-    body: Buffer,
+    body: AsyncIterable<Buffer | Uint8Array | string>,
     contentType: string,
   ) {
     const image = await this.prepareLocalObjectUpload(ownerId, key);
-
-    if (body.length !== Number(image.sizeBytes)) {
-      throw new BadRequestException('Uploaded object size does not match');
-    }
 
     if (contentType && contentType !== image.mimeType) {
       throw new BadRequestException('Uploaded object type does not match');
     }
 
-    await this.inspectImageBuffer(
-      body,
-      image.mimeType,
-      BigInt(image.sizeBytes),
-    );
-
     const setting = await this.settings.getRuntime(ownerId);
     const storageSetting = this.toStorageSetting(setting);
-    await this.storage.putObject({
+    const draft = await this.storage.createLocalUploadDraft({
       key,
       body,
-      contentType: image.mimeType,
+      expectedSizeBytes: Number(image.sizeBytes),
       setting: {
         ...storageSetting,
         storageProvider: image.storageProvider,
       },
     });
+
+    try {
+      await this.inspectImageFile(
+        draft.tempPath,
+        image.mimeType,
+        BigInt(image.sizeBytes),
+      );
+      await draft.commit();
+    } catch (error) {
+      await draft.cleanup().catch(() => undefined);
+      throw error;
+    }
 
     return { ok: true };
   }
@@ -390,11 +393,24 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
     setting: StorageRuntimeConfig,
   ) {
     try {
-      const buffer = await this.storage.getObjectBuffer(image.storageKey, {
+      const storageSetting = {
         ...setting,
         storageProvider: image.storageProvider,
-      });
-      await this.inspectImageBuffer(buffer, image.mimeType, image.sizeBytes);
+      };
+
+      if (image.storageProvider === StorageProvider.LOCAL) {
+        await this.inspectImageFile(
+          this.storage.getLocalObjectPath(image.storageKey, storageSetting),
+          image.mimeType,
+          image.sizeBytes,
+        );
+      } else {
+        const buffer = await this.storage.getObjectBuffer(
+          image.storageKey,
+          storageSetting,
+        );
+        await this.inspectImageBuffer(buffer, image.mimeType, image.sizeBytes);
+      }
     } catch (error) {
       await this.storage
         .deleteObject(image.storageKey, {
@@ -409,6 +425,26 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
 
       throw error;
     }
+  }
+
+  private async inspectImageFile(
+    filePath: string,
+    expectedContentType: string,
+    expectedSizeBytes: bigint,
+  ) {
+    const file = await stat(filePath);
+    if (file.size !== Number(expectedSizeBytes)) {
+      throw new BadRequestException('Uploaded object size does not match');
+    }
+
+    let metadata: sharp.Metadata;
+    try {
+      metadata = await sharp(filePath, { failOn: 'error' }).metadata();
+    } catch {
+      throw new BadRequestException('Uploaded object is not a readable image');
+    }
+
+    this.validateImageMetadata(metadata, expectedContentType);
   }
 
   private async inspectImageBuffer(
@@ -426,6 +462,14 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
     } catch {
       throw new BadRequestException('Uploaded object is not a readable image');
     }
+
+    this.validateImageMetadata(metadata, expectedContentType);
+  }
+
+  private validateImageMetadata(
+    metadata: sharp.Metadata,
+    expectedContentType: string,
+  ) {
     if (!metadata.width || !metadata.height || !metadata.format) {
       throw new BadRequestException('Uploaded object is not a readable image');
     }

@@ -9,10 +9,19 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StorageProvider } from '@prisma/client';
-import { createReadStream } from 'node:fs';
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { createReadStream, createWriteStream } from 'node:fs';
+import {
+  access,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import * as path from 'node:path';
-import { Readable } from 'stream';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { requiredConfig } from '../../common/required-config';
 
 export type StorageRuntimeConfig = {
@@ -25,6 +34,13 @@ export type StorageRuntimeConfig = {
   s3SecretKey?: string | null;
   s3ForcePathStyle?: boolean;
   localStoragePath?: string | null;
+};
+
+export type LocalUploadDraft = {
+  tempPath: string;
+  sizeBytes: number;
+  commit: () => Promise<string>;
+  cleanup: () => Promise<void>;
 };
 
 @Injectable()
@@ -177,6 +193,70 @@ export class StorageService implements OnModuleInit {
     return this.getPublicUrlWithBase(input.key, input.setting);
   }
 
+  async createLocalUploadDraft(input: {
+    key: string;
+    body: AsyncIterable<Buffer | Uint8Array | string>;
+    expectedSizeBytes: number;
+    setting?: StorageRuntimeConfig;
+  }): Promise<LocalUploadDraft> {
+    if (this.getProvider(input.setting) !== StorageProvider.LOCAL) {
+      throw new BadRequestException('Image is not configured for local upload');
+    }
+
+    const finalPath = this.getLocalPath(input.key, input.setting);
+    const tempDir = path.join(path.dirname(finalPath), '.tmp');
+    await mkdir(tempDir, { recursive: true });
+
+    const tempPath = path.join(
+      tempDir,
+      `${path.basename(finalPath)}.${randomUUID()}.upload`,
+    );
+    let sizeBytes = 0;
+
+    const counter = new Transform({
+      transform: (chunk, _encoding, callback) => {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        sizeBytes += buffer.length;
+
+        if (sizeBytes > input.expectedSizeBytes) {
+          callback(
+            new BadRequestException('Uploaded object size does not match'),
+          );
+          return;
+        }
+
+        callback(null, buffer);
+      },
+    });
+
+    try {
+      await pipeline(
+        Readable.from(input.body),
+        counter,
+        createWriteStream(tempPath, { flags: 'wx' }),
+      );
+    } catch (error) {
+      await rm(tempPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+
+    if (sizeBytes !== input.expectedSizeBytes) {
+      await rm(tempPath, { force: true }).catch(() => undefined);
+      throw new BadRequestException('Uploaded object size does not match');
+    }
+
+    return {
+      tempPath,
+      sizeBytes,
+      commit: async () => {
+        await mkdir(path.dirname(finalPath), { recursive: true });
+        await rename(tempPath, finalPath);
+        return this.getPublicUrlWithBase(input.key, input.setting);
+      },
+      cleanup: () => rm(tempPath, { force: true }).then(() => undefined),
+    };
+  }
+
   async deleteObject(key: string, setting?: StorageRuntimeConfig) {
     if (this.getProvider(setting) === StorageProvider.LOCAL) {
       await rm(this.getLocalPath(key, setting), { force: true });
@@ -194,6 +274,16 @@ export class StorageService implements OnModuleInit {
 
   getObjectUrlPath(key: string) {
     return `/api/public/files/${encodeURIComponent(key)}`;
+  }
+
+  getLocalObjectPath(key: string, setting?: StorageRuntimeConfig) {
+    if (this.getProvider(setting) !== StorageProvider.LOCAL) {
+      throw new BadRequestException(
+        'Image is not configured for local storage',
+      );
+    }
+
+    return this.getLocalPath(key, setting);
   }
 
   async testS3Connection(setting?: StorageRuntimeConfig) {
