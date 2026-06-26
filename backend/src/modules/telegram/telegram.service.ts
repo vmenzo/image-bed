@@ -627,7 +627,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         prefix,
         'PicVault Telegram 控制台',
         '',
-        '发送图片：直接上传到图床',
+        '发送图片：直接上传到 PicVault',
         '/panel：打开控制台',
         '/status：查看状态和容量',
         '/recent：查看最近图片',

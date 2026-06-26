@@ -17,7 +17,7 @@ CREATE TABLE "AppSetting" (
     "generateAvif" BOOLEAN NOT NULL DEFAULT false,
     "stripMetadata" BOOLEAN NOT NULL DEFAULT true,
     "watermark" BOOLEAN NOT NULL DEFAULT false,
-    "watermarkText" TEXT NOT NULL DEFAULT 'Image Bed',
+    "watermarkText" TEXT NOT NULL DEFAULT 'PicVault',
     "hotlinkProtection" BOOLEAN NOT NULL DEFAULT false,
     "uploadAudit" BOOLEAN NOT NULL DEFAULT false,
     "apiUpload" BOOLEAN NOT NULL DEFAULT true,

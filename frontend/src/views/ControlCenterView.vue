@@ -221,6 +221,14 @@ async function save() {
   }
 }
 
+async function handleSaveClick() {
+  try {
+    await save();
+  } catch {
+    // 错误详情已由 http 拦截器统一弹出。
+  }
+}
+
 async function testEmail() {
   if (!email.testTo) {
     ElMessage.warning('请填写测试收件邮箱');
@@ -232,6 +240,8 @@ async function testEmail() {
     await save();
     await testEmailApi({ email: email.testTo });
     ElMessage.success('测试邮件已发送');
+  } catch {
+    // 错误详情已由 http 拦截器统一弹出。
   } finally {
     testingEmail.value = false;
   }
@@ -247,6 +257,8 @@ async function testStorage() {
         ? '本机存储配置可用'
         : `第三方对象存储连接成功：${result.bucket || 'bucket 已验证'}`,
     );
+  } catch {
+    // 错误详情已由 http 拦截器统一弹出，这里仅吞掉异常避免触发全局错误处理。
   } finally {
     testingStorage.value = false;
   }
@@ -274,7 +286,7 @@ watch(
 <template>
   <div class="page-stack" v-loading="loading">
     <div class="page-actions">
-      <el-button type="primary" :loading="saving" @click="save"
+      <el-button type="primary" :loading="saving" @click="handleSaveClick"
         >保存全部配置</el-button
       >
     </div>
