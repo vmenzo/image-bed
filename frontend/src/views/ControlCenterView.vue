@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus/es/components/message/index';
 import { listAlbumsApi } from '@/api/albums';
 import {
@@ -21,10 +21,12 @@ const albums = ref<Album[]>([]);
 const telegramConfigured = ref(false);
 const currentOrigin = window.location.origin;
 const defaultPublicBaseUrl = '';
-const localPublicBaseUrl = `${window.location.origin}/api/public/files`;
+const site = reactive({
+  appPublicUrl: currentOrigin,
+});
 
 const storage = reactive({
-  publicBaseUrl: defaultPublicBaseUrl,
+  s3PublicBaseUrl: defaultPublicBaseUrl,
   provider: 'S3' as StorageProvider,
   localStoragePath: '/app/backend/storage',
   s3Endpoint: '',
@@ -39,9 +41,10 @@ const storage = reactive({
   defaultVisibility: 'PRIVATE' as Visibility,
 });
 
-const site = reactive({
-  appPublicUrl: currentOrigin,
-});
+const localPublicBaseUrl = computed(
+  () =>
+    `${(site.appPublicUrl || currentOrigin).replace(/\/$/, '')}/api/public/files`,
+);
 
 const processing = reactive({
   thumbnail: true,
@@ -131,11 +134,7 @@ async function load() {
     ]);
 
     albums.value = albumList;
-    storage.publicBaseUrl =
-      data.publicBaseUrl ??
-      (data.storageProvider === 'LOCAL'
-        ? localPublicBaseUrl
-        : defaultPublicBaseUrl);
+    storage.s3PublicBaseUrl = data.publicBaseUrl ?? defaultPublicBaseUrl;
     storage.provider = data.storageProvider;
     storage.localStoragePath =
       data.localStoragePath || storage.localStoragePath;
@@ -187,7 +186,7 @@ async function save() {
     storage.s3SecretKey = cleanS3Credential(storage.s3SecretKey);
 
     await updateAppSettingApi({
-      publicBaseUrl: storage.publicBaseUrl || null,
+      publicBaseUrl: storage.s3PublicBaseUrl || null,
       appPublicUrl: site.appPublicUrl || null,
       storageProvider: storage.provider,
       localStoragePath: storage.localStoragePath || null,
@@ -276,22 +275,6 @@ async function testStorage() {
 }
 
 onMounted(load);
-
-watch(
-  () => storage.provider,
-  (provider) => {
-    if (provider === 'LOCAL') {
-      if (!storage.publicBaseUrl) {
-        storage.publicBaseUrl = localPublicBaseUrl;
-      }
-      return;
-    }
-
-    if (storage.publicBaseUrl === localPublicBaseUrl) {
-      storage.publicBaseUrl = '';
-    }
-  },
-);
 </script>
 
 <template>
@@ -328,22 +311,19 @@ watch(
             "
           >
             <el-input
-              v-model="storage.publicBaseUrl"
-              :placeholder="
-                storage.provider === 'LOCAL'
-                  ? localPublicBaseUrl
-                  : 'https://cdn.example.com 或对象存储公开域名'
-              "
+              v-if="storage.provider === 'S3'"
+              v-model="storage.s3PublicBaseUrl"
+              placeholder="https://cdn.example.com 或对象存储公开域名"
             >
               <template #append>
-                <el-button
-                  @click="
-                    storage.publicBaseUrl =
-                      storage.provider === 'LOCAL'
-                        ? localPublicBaseUrl
-                        : currentOrigin
-                  "
-                >
+                <el-button @click="storage.s3PublicBaseUrl = currentOrigin">
+                  当前域名
+                </el-button>
+              </template>
+            </el-input>
+            <el-input v-else :model-value="localPublicBaseUrl" readonly>
+              <template #append>
+                <el-button @click="site.appPublicUrl = currentOrigin">
                   当前域名
                 </el-button>
               </template>

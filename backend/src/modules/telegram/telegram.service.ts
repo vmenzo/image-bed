@@ -2192,17 +2192,33 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       setting?.appPublicUrl?.trim() ||
       this.config.get<string>('APP_PUBLIC_URL')?.trim();
 
+    if (setting?.storageProvider === StorageProvider.LOCAL) {
+      return this.firstPublicBaseUrl(
+        [
+          {
+            value: setting?.appPublicUrl,
+            fallbackPath: '/api/public/files',
+          },
+          {
+            value: this.config.get<string>('APP_PUBLIC_URL'),
+            fallbackPath: '/api/public/files',
+          },
+          {
+            value: '/api/public/files',
+            relativeBaseUrl: appPublicUrl,
+          },
+        ],
+        '/api/public/files',
+      );
+    }
+
     return this.firstPublicBaseUrl(
       [
         {
           value: setting?.publicBaseUrl,
-          fallbackPath: '/api/public/files',
-          relativeBaseUrl: appPublicUrl,
         },
         {
           value: this.config.get<string>('PUBLIC_IMAGE_BASE_URL'),
-          fallbackPath: '/api/public/files',
-          relativeBaseUrl: appPublicUrl,
         },
         {
           value: '/api/public/files',
