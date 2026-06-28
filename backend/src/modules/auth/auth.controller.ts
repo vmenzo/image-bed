@@ -40,6 +40,15 @@ export class AuthController {
     private readonly loginThrottle: LoginThrottleGuard,
   ) {}
 
+  @Get('registration-status')
+  async registrationStatus() {
+    const userCount = await this.prisma.user.count();
+
+    return {
+      firstUser: userCount === 0,
+    };
+  }
+
   @Post('register')
   register(@Body() dto: RegisterDto) {
     if (this.config.get<string>('ALLOW_REGISTER') !== 'true') {

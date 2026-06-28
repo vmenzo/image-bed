@@ -40,6 +40,20 @@ export type MaintenanceSummary = {
   processing: number;
 };
 
+export type BackupSnapshot = {
+  name: string;
+  path: string;
+  sizeBytes: number;
+  fileCount: number;
+  createdAt: string;
+};
+
+export type BackupStatus = {
+  running: boolean;
+  directory: string;
+  latest: BackupSnapshot | null;
+};
+
 export function listUsersApi(params: {
   page?: number;
   pageSize?: number;
@@ -87,6 +101,17 @@ export function listAuditLogsApi(params: {
 
 export function maintenanceSummaryApi() {
   return http.get<unknown, MaintenanceSummary>('/maintenance/summary');
+}
+
+export function backupStatusApi() {
+  return http.get<unknown, BackupStatus>('/maintenance/backup');
+}
+
+export function runBackupApi() {
+  return http.post<unknown, BackupStatus & { ok: boolean }>(
+    '/maintenance/backup',
+    {},
+  );
 }
 
 export function reprocessImagesApi(payload: {

@@ -25,6 +25,22 @@ export class MaintenanceController {
     return this.maintenance.summary();
   }
 
+  @Get('backup')
+  backupStatus() {
+    return this.maintenance.backupStatus();
+  }
+
+  @Post('backup')
+  runBackup(
+    @CurrentUser() user: CurrentUserPayload,
+    @Req() request: Request,
+  ) {
+    return this.maintenance.runBackup({
+      actorId: user.id,
+      request,
+    });
+  }
+
   @Post('reprocess')
   reprocess(
     @CurrentUser() user: CurrentUserPayload,

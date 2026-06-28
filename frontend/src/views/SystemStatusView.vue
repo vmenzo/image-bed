@@ -29,12 +29,6 @@ const queuePending = computed(
     (health.value?.services.queue.active ?? 0),
 );
 
-const diskPercent = computed(() => {
-  const disk = health.value?.services.disk;
-  if (!disk?.totalBytes) return 0;
-  return Math.round((disk.usedBytes / disk.totalBytes) * 100);
-});
-
 async function load() {
   loading.value = true;
   try {
@@ -130,8 +124,8 @@ onMounted(load);
           <el-icon><WarningFilled /></el-icon>
         </div>
         <div>
-          <span>磁盘使用</span>
-          <strong>{{ diskPercent }}%</strong>
+          <span>图床占用</span>
+          <strong>{{ formatBytes(health?.services.disk.usedBytes ?? 0) }}</strong>
         </div>
       </el-card>
     </section>
@@ -192,29 +186,15 @@ onMounted(load);
               {{ health.services.queue.message }}
             </template>
           </el-descriptions-item>
-          <el-descriptions-item label="磁盘">
+          <el-descriptions-item label="图床占用">
             <el-tag :type="statusTagType(health?.services.disk.status)">
               {{ statusLabel(health?.services.disk.status) }}
             </el-tag>
-            {{ health?.services.disk.path }}， 已用
-            {{ formatBytes(health?.services.disk.usedBytes ?? 0) }} /
-            {{ formatBytes(health?.services.disk.totalBytes ?? 0) }}
+            {{ health?.services.disk.path }}，
+            {{ health?.services.disk.scope === 'local-storage' ? '本地存储目录' : '图片记录合计' }}
+            {{ formatBytes(health?.services.disk.usedBytes ?? 0) }}
             <template v-if="health?.services.disk.message">
               {{ health.services.disk.message }}
-            </template>
-          </el-descriptions-item>
-          <el-descriptions-item label="最近备份">
-            <el-tag :type="statusTagType(health?.services.backup.status)">
-              {{ statusLabel(health?.services.backup.status) }}
-            </el-tag>
-            <template v-if="health?.services.backup.latest">
-              {{ health.services.backup.latest.name }}，
-              {{ formatBytes(health.services.backup.latest.sizeBytes) }}，
-              {{ health.services.backup.latest.fileCount }} 个文件
-            </template>
-            <template v-else>暂无备份</template>
-            <template v-if="health?.services.backup.message">
-              {{ health.services.backup.message }}
             </template>
           </el-descriptions-item>
         </el-descriptions>
@@ -242,14 +222,6 @@ onMounted(load);
               {{ health?.counts.albums ?? 0 }} /
               {{ health?.counts.apiKeys ?? 0 }}
             </span>
-          </div>
-          <div>
-            <strong>备份目录</strong>
-            <span>{{ health?.services.backup.directory }}</span>
-          </div>
-          <div>
-            <strong>历史备份数</strong>
-            <span>{{ health?.services.backup.count ?? 0 }}</span>
           </div>
         </div>
       </el-card>

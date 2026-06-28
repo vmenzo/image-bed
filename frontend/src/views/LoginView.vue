@@ -4,7 +4,11 @@ import { useRoute, useRouter } from 'vue-router';
 import type { FormInstance, FormRules } from 'element-plus';
 import { ElMessage } from 'element-plus/es/components/message/index';
 import { Grid, Key, Lock, Message, User } from '@element-plus/icons-vue';
-import { requestPasswordResetApi, resetPasswordApi } from '@/api/auth';
+import {
+  registrationStatusApi,
+  requestPasswordResetApi,
+  resetPasswordApi,
+} from '@/api/auth';
 import { useAuthStore } from '@/stores/auth';
 
 type AuthMode = 'login' | 'register' | 'forgot' | 'reset';
@@ -16,6 +20,7 @@ const formRef = ref<FormInstance>();
 const loading = ref(false);
 const mode = ref<AuthMode>('login');
 const allowRegister = import.meta.env.VITE_ALLOW_REGISTER === 'true';
+const firstUser = ref(false);
 const form = reactive({
   email: '',
   name: '',
@@ -47,6 +52,9 @@ const passwordAutocomplete = computed(() =>
 );
 const needsPassword = computed(() =>
   ['login', 'register'].includes(mode.value),
+);
+const showFirstAdminHint = computed(
+  () => allowRegister && firstUser.value && mode.value === 'register',
 );
 const rules = computed<FormRules>(() => ({
   email: [
@@ -89,7 +97,20 @@ onMounted(() => {
   ) {
     mode.value = 'reset';
   }
+
+  void loadRegistrationStatus();
 });
+
+async function loadRegistrationStatus() {
+  if (!allowRegister) return;
+
+  try {
+    const status = await registrationStatusApi();
+    firstUser.value = status.firstUser;
+  } catch {
+    firstUser.value = false;
+  }
+}
 
 async function submit() {
   const valid = await formRef.value?.validate().catch(() => false);
@@ -192,6 +213,10 @@ function switchRegister() {
           <p>{{ subtitle }}</p>
         </div>
 
+        <div v-if="showFirstAdminHint" class="first-admin-hint">
+          首次安装时，第一个注册成功的账户会自动成为管理员。
+        </div>
+
         <el-form
           ref="formRef"
           :model="form"
@@ -203,7 +228,6 @@ function switchRegister() {
             <el-input
               v-model.trim="form.email"
               size="large"
-              placeholder="name@example.com"
               autocomplete="username"
             >
               <template #prefix>
@@ -216,7 +240,6 @@ function switchRegister() {
             <el-input
               v-model.trim="form.name"
               size="large"
-              placeholder="Admin"
               autocomplete="name"
             >
               <template #prefix>
@@ -231,7 +254,6 @@ function switchRegister() {
               size="large"
               type="password"
               show-password
-              placeholder="至少 8 位"
               :autocomplete="passwordAutocomplete"
             >
               <template #prefix>
@@ -250,7 +272,6 @@ function switchRegister() {
               size="large"
               type="password"
               show-password
-              placeholder="至少 8 位"
               autocomplete="new-password"
             >
               <template #prefix>

@@ -1,10 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
-import { StorageProvider } from '@prisma/client';
+import { ImageStatus, StorageProvider } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { constants } from 'node:fs';
-import { access, mkdir, readdir, stat, statfs } from 'node:fs/promises';
+import { access, mkdir, readdir, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
@@ -61,21 +61,13 @@ export class SystemService {
       runtime.setting,
       runtime.errorMessage,
     );
-    const diskPath =
-      runtime.setting.storageProvider === StorageProvider.LOCAL
-        ? this.localStoragePath(runtime.setting)
-        : process.cwd();
-    const [disk, backup] = await Promise.all([
-      this.diskUsage(diskPath),
-      this.latestBackup(),
-    ]);
+    const disk = await this.serviceStorageUsage(runtime.setting);
     const statuses = [
       database.database,
       queueServices.redis,
       queueServices.queue,
       storage,
       disk,
-      backup,
     ];
 
     return {
@@ -93,7 +85,6 @@ export class SystemService {
         },
         queue: queueServices.queue,
         disk,
-        backup,
       },
       counts: database.counts,
     };
@@ -314,103 +305,80 @@ export class SystemService {
     }
   }
 
-  private async diskUsage(targetPath: string) {
-    try {
-      const info = await statfs(targetPath);
-      const totalBytes = Number(info.blocks) * Number(info.bsize);
-      const freeBytes = Number(info.bavail) * Number(info.bsize);
-      const usedBytes = Number(info.blocks - info.bavail) * Number(info.bsize);
-      const freeRatio = totalBytes > 0 ? freeBytes / totalBytes : 0;
-      const health =
-        freeRatio < 0.05
-          ? this.serviceError('磁盘可用空间低于 5%')
-          : freeRatio < 0.15
-            ? this.serviceWarning('磁盘可用空间低于 15%')
-            : this.serviceOk();
+  private async serviceStorageUsage(setting: RuntimeStorageSetting) {
+    if (setting.storageProvider === StorageProvider.LOCAL) {
+      return this.localStorageUsage(setting);
+    }
 
+    return this.objectStorageUsage(setting);
+  }
+
+  private async localStorageUsage(setting: RuntimeStorageSetting) {
+    const targetPath = this.localStoragePath(setting);
+
+    try {
+      await mkdir(targetPath, { recursive: true });
+      const usedBytes = await this.directorySize(targetPath);
       return {
-        ...health,
+        ...this.serviceOk(),
+        provider: StorageProvider.LOCAL,
+        scope: 'local-storage',
         path: targetPath,
-        totalBytes,
-        freeBytes,
         usedBytes,
       };
     } catch (error) {
       return {
         ...this.serviceError(error),
+        provider: StorageProvider.LOCAL,
+        scope: 'local-storage',
         path: targetPath,
-        totalBytes: 0,
-        freeBytes: 0,
         usedBytes: 0,
       };
     }
   }
 
-  private async latestBackup() {
-    const backupDir =
-      this.config.get<string>('PICVAULT_BACKUP_DIR') ?? '/app/backups';
-
+  private async objectStorageUsage(setting: RuntimeStorageSetting) {
     try {
-      await mkdir(backupDir, { recursive: true });
-      const entries = await readdir(backupDir, { withFileTypes: true });
-      const directories = entries.filter((entry) => entry.isDirectory());
-      const backups = await Promise.all(
-        directories.map(async (entry) => {
-          const fullPath = path.join(backupDir, entry.name);
-          const files = await this.backupFiles(fullPath);
-          const sizeBytes = files.reduce(
-            (sum, file) => sum + file.sizeBytes,
-            0,
-          );
-          const newestMtime = files.reduce(
-            (latest, file) => Math.max(latest, file.mtimeMs),
-            0,
-          );
+      const aggregate = await this.prisma.image.aggregate({
+        _sum: { sizeBytes: true },
+        where: {
+          storageProvider: setting.storageProvider,
+          status: { not: ImageStatus.DELETED },
+        },
+      });
 
-          return {
-            name: entry.name,
-            path: fullPath,
-            sizeBytes,
-            fileCount: files.length,
-            createdAt: new Date(newestMtime || Date.now()).toISOString(),
-          };
-        }),
-      );
-
-      backups.sort((a, b) => b.name.localeCompare(a.name));
       return {
-        ...(backups.length
-          ? this.serviceOk()
-          : this.serviceWarning('暂无备份')),
-        directory: backupDir,
-        latest: backups[0] ?? null,
-        count: backups.length,
+        ...this.serviceOk(),
+        provider: setting.storageProvider,
+        scope: 'image-records',
+        path: setting.s3Bucket?.trim() || 'object-storage',
+        usedBytes: Number(aggregate._sum.sizeBytes ?? 0),
       };
     } catch (error) {
       return {
         ...this.serviceError(error),
-        directory: backupDir,
-        latest: null,
-        count: 0,
+        provider: setting.storageProvider,
+        scope: 'image-records',
+        path: setting.s3Bucket?.trim() || 'object-storage',
+        usedBytes: 0,
       };
     }
   }
 
-  private async backupFiles(dir: string) {
+  private async directorySize(dir: string): Promise<number> {
     const entries = await readdir(dir, { withFileTypes: true });
-    const files = await Promise.all(
-      entries
-        .filter((entry) => entry.isFile())
-        .map(async (entry) => {
-          const fullPath = path.join(dir, entry.name);
-          const info = await stat(fullPath);
-          return {
-            sizeBytes: info.size,
-            mtimeMs: info.mtimeMs,
-          };
-        }),
+    const sizes = await Promise.all(
+      entries.map(async (entry) => {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isSymbolicLink()) return 0;
+        if (entry.isDirectory()) return this.directorySize(fullPath);
+        if (!entry.isFile()) return 0;
+        const info = await stat(fullPath);
+        return info.size;
+      }),
     );
-    return files;
+
+    return sizes.reduce((sum, size) => sum + size, 0);
   }
 
   private localStoragePath(setting: RuntimeStorageSetting) {

@@ -103,7 +103,7 @@ export const router = createRouter({
           component: () => import('@/views/SystemStatusView.vue'),
           meta: {
             title: '系统状态',
-            subtitle: '查看运行状态、依赖服务、队列、磁盘和备份',
+            subtitle: '查看运行状态、依赖服务、队列和图床占用',
             adminOnly: true,
           },
         },

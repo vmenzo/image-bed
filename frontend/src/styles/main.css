@@ -446,6 +446,10 @@ button {
   gap: 12px;
 }
 
+.backup-actions {
+  margin-top: 14px;
+}
+
 .toolbar-search {
   width: 320px;
   max-width: 360px;
@@ -1255,6 +1259,17 @@ button {
 .login-card-head p {
   margin: 8px 0 0;
   color: #64748b;
+}
+
+.first-admin-hint {
+  margin: -6px 0 18px;
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  color: #1d4ed8;
+  background: #eff6ff;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .full-button {

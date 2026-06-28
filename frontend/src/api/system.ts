@@ -42,20 +42,9 @@ export type SystemHealth = {
     };
     disk: ServiceStatus & {
       path: string;
-      totalBytes: number;
-      freeBytes: number;
+      provider: 'LOCAL' | 'S3';
+      scope: 'local-storage' | 'image-records';
       usedBytes: number;
-    };
-    backup: ServiceStatus & {
-      directory: string;
-      count: number;
-      latest: null | {
-        name: string;
-        path: string;
-        sizeBytes: number;
-        fileCount: number;
-        createdAt: string;
-      };
     };
   };
   counts: {

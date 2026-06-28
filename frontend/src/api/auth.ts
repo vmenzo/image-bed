@@ -18,6 +18,10 @@ export function registerApi(payload: {
   return http.post<unknown, AuthResponse>('/auth/register', payload);
 }
 
+export function registrationStatusApi() {
+  return http.get<unknown, { firstUser: boolean }>('/auth/registration-status');
+}
+
 export function requestPasswordResetApi(payload: { email: string }) {
   return http.post<unknown, { ok: boolean }>(
     '/auth/password-reset/request',

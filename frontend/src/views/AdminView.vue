@@ -4,9 +4,11 @@ import { ElMessage } from 'element-plus/es/components/message/index';
 import { ElMessageBox } from 'element-plus/es/components/message-box/index';
 import { DataBoard, Key, Refresh, SetUp, User } from '@element-plus/icons-vue';
 import {
+  type BackupStatus,
   type AdminUser,
   type AuditLog,
   type MaintenanceSummary,
+  backupStatusApi,
   listAuditLogsApi,
   listUsersApi,
   maintenanceSummaryApi,
@@ -14,6 +16,7 @@ import {
   recalculateUserUsageApi,
   reprocessImagesApi,
   resetUserPasswordApi,
+  runBackupApi,
   updateUserApi,
 } from '@/api/admin';
 import {
@@ -34,12 +37,13 @@ const totalUsers = ref(0);
 const auditLogs = ref<AuditLog[]>([]);
 const auditTotal = ref(0);
 const maintenance = ref<MaintenanceSummary | null>(null);
+const backup = ref<BackupStatus | null>(null);
 const telegram = ref<TelegramStatus | null>(null);
 const selectedUser = ref<AdminUser | null>(null);
 const userDialogVisible = ref(false);
 const passwordDialogVisible = ref(false);
 const maintenanceLoading = ref(false);
-const maintenanceAction = ref<'reprocess' | 'migrate' | ''>('');
+const maintenanceAction = ref<'backup' | 'reprocess' | 'migrate' | ''>('');
 const userQuery = reactive({
   page: 1,
   pageSize: 20,
@@ -105,7 +109,12 @@ async function loadMaintenance() {
   if (!isAdmin.value) return;
   maintenanceLoading.value = true;
   try {
-    maintenance.value = await maintenanceSummaryApi();
+    const [summary, backupStatus] = await Promise.all([
+      maintenanceSummaryApi(),
+      backupStatusApi(),
+    ]);
+    maintenance.value = summary;
+    backup.value = backupStatus;
   } finally {
     maintenanceLoading.value = false;
   }
@@ -226,6 +235,21 @@ async function migrateStorage() {
       ElMessage.info('没有需要迁移的图片');
     }
     await loadMaintenance();
+  } finally {
+    maintenanceAction.value = '';
+  }
+}
+
+async function runBackup() {
+  maintenanceAction.value = 'backup';
+  try {
+    await ElMessageBox.confirm(
+      '将立即导出 PostgreSQL 数据库并打包本机存储文件。该操作只运行一次，不会启用自动备份。',
+      '手动备份',
+      { type: 'warning' },
+    );
+    backup.value = await runBackupApi();
+    ElMessage.success('备份已完成');
   } finally {
     maintenanceAction.value = '';
   }
@@ -406,6 +430,36 @@ onMounted(loadAll);
           v-loading="maintenanceLoading"
         >
           <div class="settings-grid wide">
+            <el-card shadow="never" class="panel-card">
+              <template #header><strong>手动备份</strong></template>
+              <el-descriptions :column="1" border>
+                <el-descriptions-item label="备份方式">
+                  手动触发，不启用自动任务
+                </el-descriptions-item>
+                <el-descriptions-item label="备份目录">
+                  {{ backup?.directory || '-' }}
+                </el-descriptions-item>
+                <el-descriptions-item label="最近备份">
+                  <template v-if="backup?.latest">
+                    {{ backup.latest.name }}，
+                    {{ formatBytes(backup.latest.sizeBytes) }}，
+                    {{ backup.latest.fileCount }} 个文件，
+                    {{ formatDate(backup.latest.createdAt) }}
+                  </template>
+                  <template v-else>暂无手动备份</template>
+                </el-descriptions-item>
+              </el-descriptions>
+              <div class="backup-actions toolbar">
+                <el-button
+                  type="primary"
+                  :loading="maintenanceAction === 'backup' || backup?.running"
+                  @click="runBackup"
+                  >立即备份</el-button
+                >
+                <el-button @click="loadMaintenance">刷新状态</el-button>
+              </div>
+            </el-card>
+
             <el-card shadow="never" class="panel-card">
               <template #header><strong>派生图修复</strong></template>
               <el-form label-position="top">

@@ -1,7 +1,17 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
+import { ConfigService } from '@nestjs/config';
 import { ImageStatus, StorageProvider } from '@prisma/client';
 import { Queue } from 'bullmq';
+import { spawn } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
+import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import * as path from 'node:path';
 import { lookup } from 'mime-types';
 import { AuditContext, AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -21,10 +31,21 @@ type DerivedCandidate = {
   avifKey: string | null;
 };
 
+type BackupSnapshot = {
+  name: string;
+  path: string;
+  sizeBytes: number;
+  fileCount: number;
+  createdAt: string;
+};
+
 @Injectable()
 export class MaintenanceService {
+  private backupRunning = false;
+
   constructor(
     private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
     private readonly settings: SettingsService,
     private readonly storage: StorageService,
     private readonly audit: AuditService,
@@ -67,6 +88,64 @@ export class MaintenanceService {
       failed,
       processing,
     };
+  }
+
+  async backupStatus() {
+    const backupDir = this.backupDirectory();
+    return {
+      running: this.backupRunning,
+      directory: backupDir,
+      latest: await this.latestBackup(backupDir),
+    };
+  }
+
+  async runBackup(context: AuditContext) {
+    if (this.backupRunning) {
+      throw new ConflictException('Backup is already running');
+    }
+
+    this.backupRunning = true;
+    const backupDir = this.backupDirectory();
+    const stamp = this.backupStamp();
+    const destination = path.join(backupDir, stamp);
+
+    try {
+      await mkdir(destination, { recursive: true });
+      const postgresSql = path.join(destination, 'postgres.sql');
+      await this.dumpPostgres(postgresSql);
+
+      const storageArchive = await this.archiveLocalStorage(destination);
+      await this.writeChecksums(destination);
+      const snapshot = await this.writeBackupManifest(destination, {
+        createdAt: new Date().toISOString(),
+        postgresSql,
+        storageArchive,
+      });
+
+      await this.pruneBackups(backupDir, 14);
+      await this.audit.record(context, {
+        action: 'maintenance.backup',
+        target: 'backup',
+        metadata: {
+          name: snapshot.name,
+          path: snapshot.path,
+          sizeBytes: snapshot.sizeBytes,
+          fileCount: snapshot.fileCount,
+        },
+      });
+
+      return {
+        ok: true,
+        running: false,
+        directory: backupDir,
+        latest: snapshot,
+      };
+    } catch (error) {
+      await rm(destination, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    } finally {
+      this.backupRunning = false;
+    }
   }
 
   async reprocess(dto: ReprocessImagesDto, context: AuditContext) {
@@ -334,6 +413,230 @@ export class MaintenanceService {
       body: buffer,
       contentType: input.contentType,
       setting: input.targetSetting,
+    });
+  }
+
+  private backupDirectory() {
+    return this.config.get<string>('PICVAULT_BACKUP_DIR') ?? '/app/backups';
+  }
+
+  private backupStamp() {
+    const date = new Date();
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return [
+      date.getFullYear(),
+      pad(date.getMonth() + 1),
+      pad(date.getDate()),
+      '-',
+      pad(date.getHours()),
+      pad(date.getMinutes()),
+      pad(date.getSeconds()),
+    ].join('');
+  }
+
+  private async latestBackup(backupDir: string) {
+    try {
+      await mkdir(backupDir, { recursive: true });
+      const entries = await readdir(backupDir, { withFileTypes: true });
+      const backups = (
+        await Promise.all(
+          entries
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => this.backupSnapshot(path.join(backupDir, entry.name))),
+        )
+      ).filter(Boolean) as BackupSnapshot[];
+      backups.sort((a, b) => b.name.localeCompare(a.name));
+      return backups[0] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async backupSnapshot(dir: string): Promise<BackupSnapshot | null> {
+    try {
+      const files = await this.filesInDirectory(dir);
+      const stats = await Promise.all(files.map((file) => stat(file)));
+      const newestMtime = stats.reduce(
+        (latest, item) => Math.max(latest, item.mtimeMs),
+        0,
+      );
+      return {
+        name: path.basename(dir),
+        path: dir,
+        sizeBytes: stats.reduce((sum, item) => sum + item.size, 0),
+        fileCount: files.length,
+        createdAt: new Date(newestMtime || Date.now()).toISOString(),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async filesInDirectory(dir: string) {
+    const entries = await readdir(dir, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => path.join(dir, entry.name));
+  }
+
+  private async dumpPostgres(outputPath: string) {
+    const args = [
+      '-h',
+      this.config.get<string>('POSTGRES_HOST') ?? 'postgres',
+      '-p',
+      String(this.config.get<string | number>('POSTGRES_PORT') ?? 5432),
+      '-U',
+      this.config.get<string>('POSTGRES_USER') ?? 'picvault',
+      this.config.get<string>('POSTGRES_DB') ?? 'picvault',
+    ];
+
+    await this.runProcess('pg_dump', args, {
+      cwd: process.cwd(),
+      outputPath,
+      env: {
+        ...process.env,
+        PGPASSWORD: this.config.get<string>('POSTGRES_PASSWORD') ?? '',
+      },
+    });
+  }
+
+  private async archiveLocalStorage(destination: string) {
+    const storageDir =
+      this.config.get<string>('LOCAL_STORAGE_PATH') ??
+      path.resolve(process.cwd(), 'backend/storage');
+    try {
+      const info = await stat(storageDir);
+      if (!info.isDirectory()) return null;
+    } catch {
+      return null;
+    }
+
+    const archiveName = 'local-storage.tar.gz';
+    await this.runProcess('tar', [
+      '-C',
+      storageDir,
+      '-czf',
+      path.join(destination, archiveName),
+      '.',
+    ]);
+    return archiveName;
+  }
+
+  private async writeChecksums(destination: string) {
+    const files = (await this.filesInDirectory(destination))
+      .map((file) => path.basename(file))
+      .filter((file) => file !== 'SHA256SUMS')
+      .sort();
+    if (!files.length) return;
+
+    await this.runProcess('sha256sum', files, {
+      cwd: destination,
+      outputPath: path.join(destination, 'SHA256SUMS'),
+    });
+  }
+
+  private async writeBackupManifest(
+    destination: string,
+    input: {
+      createdAt: string;
+      postgresSql: string;
+      storageArchive: string | null;
+    },
+  ) {
+    const postgresInfo = await stat(input.postgresSql);
+    await writeFile(
+      path.join(destination, 'manifest.json'),
+      `${JSON.stringify(
+        {
+          createdAt: input.createdAt,
+          path: destination,
+          postgresSqlBytes: postgresInfo.size,
+          localStorageArchive: input.storageArchive,
+          retentionDays: 14,
+          mode: 'manual',
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+
+    const snapshot = await this.backupSnapshot(destination);
+    if (!snapshot) {
+      throw new InternalServerErrorException('Backup manifest was written but snapshot could not be read');
+    }
+    return snapshot;
+  }
+
+  private async pruneBackups(backupDir: string, retentionDays: number) {
+    const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    const entries = await readdir(backupDir, { withFileTypes: true });
+    await Promise.all(
+      entries
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => {
+          const fullPath = path.join(backupDir, entry.name);
+          const info = await stat(fullPath);
+          if (info.mtimeMs < cutoff) {
+            await rm(fullPath, { recursive: true, force: true });
+          }
+        }),
+    );
+  }
+
+  private runProcess(
+    command: string,
+    args: string[],
+    options: {
+      cwd?: string;
+      outputPath?: string;
+      env?: NodeJS.ProcessEnv;
+    } = {},
+  ) {
+    return new Promise<void>((resolve, reject) => {
+      const child = spawn(command, args, {
+        cwd: options.cwd,
+        env: options.env ?? process.env,
+        stdio: ['ignore', options.outputPath ? 'pipe' : 'ignore', 'pipe'],
+      });
+      const output = options.outputPath
+        ? createWriteStream(options.outputPath, { flags: 'w' })
+        : null;
+      let stderr = '';
+
+      if (output && child.stdout) {
+        child.stdout.pipe(output);
+      }
+
+      child.stderr?.on('data', (chunk) => {
+        stderr += String(chunk);
+      });
+      child.on('error', (error) => {
+        output?.destroy();
+        reject(
+          new InternalServerErrorException(
+            `${command} failed to start: ${error.message}`,
+          ),
+        );
+      });
+      child.on('close', (code) => {
+        if (code === 0) {
+          if (output) {
+            output.on('finish', resolve);
+            output.on('error', reject);
+            output.end();
+          } else {
+            resolve();
+          }
+          return;
+        }
+        output?.destroy();
+        reject(
+          new InternalServerErrorException(
+            `${command} exited with code ${code}: ${stderr.trim()}`,
+          ),
+        );
+      });
     });
   }
 
