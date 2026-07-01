@@ -2,7 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import sharp = require('sharp');
-import { ImageStatus } from '@prisma/client';
+import { ImageStatus, StorageProvider } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import {
@@ -88,6 +88,8 @@ export class ImageProcessor extends WorkerHost {
       };
 
       const stem = image.storageKey.replace(/\.[^.]+$/, '');
+      const shouldGenerateVariants =
+        image.storageProvider !== StorageProvider.S3;
       const transformer = () =>
         this.applyImageOptions(
           sharp(input, { failOn: 'none' }).rotate(),
@@ -112,7 +114,7 @@ export class ImageProcessor extends WorkerHost {
         }
       }
 
-      if (setting.generateThumbnail) {
+      if (shouldGenerateVariants && setting.generateThumbnail) {
         const thumbKey = `${stem}.thumb.webp`;
         const thumb = await transformer()
           .resize({
@@ -135,7 +137,7 @@ export class ImageProcessor extends WorkerHost {
         updates.thumbUrl = this.storage.getPublicUrlWithBase(thumbKey, setting);
       }
 
-      if (setting.generateWebp) {
+      if (shouldGenerateVariants && setting.generateWebp) {
         const webpKey = `${stem}.webp`;
         const webp = await transformer().webp({ quality: 84 }).toBuffer();
         await this.storage.putObject({
@@ -149,7 +151,7 @@ export class ImageProcessor extends WorkerHost {
         updates.webpUrl = this.storage.getPublicUrlWithBase(webpKey, setting);
       }
 
-      if (setting.generateAvif) {
+      if (shouldGenerateVariants && setting.generateAvif) {
         const avifKey = `${stem}.avif`;
         const avif = await transformer().avif({ quality: 55 }).toBuffer();
         await this.storage.putObject({

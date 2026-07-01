@@ -36,7 +36,7 @@ import { CompleteUploadDto } from './dto/complete-upload.dto';
 import { CreateUploadDto } from './dto/create-upload.dto';
 import { ImportUrlDto } from './dto/import-url.dto';
 
-const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 12);
+const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 8);
 
 type RuntimeUploadSetting = Awaited<ReturnType<SettingsService['getRuntime']>>;
 type ImageInspection = {
@@ -90,7 +90,7 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
     }
 
     const extension = this.resolveExtension(dto.contentType);
-    const key = this.createStorageKey(ownerId, extension);
+    const key = await this.createStorageKey(ownerId, extension);
     const uploadUrl = await this.storage.createUploadUrl({
       key,
       contentType: dto.contentType,
@@ -364,7 +364,7 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
     }
 
     const extension = this.resolveExtension(contentType);
-    const key = this.createStorageKey(ownerId, extension);
+    const key = await this.createStorageKey(ownerId, extension);
     const storageSetting = this.toStorageSetting(setting);
 
     await this.storage.putObject({
@@ -918,8 +918,27 @@ export class UploadService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private createStorageKey(ownerId: string, extension: string) {
-    return `users/${ownerId}/${new Date().toISOString().slice(0, 10)}/${nanoid()}.${extension}`;
+  private async createStorageKey(ownerId: string, extension: string) {
+    const owner = await this.prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { name: true },
+    });
+    const folder = this.storageFolderName(owner?.name, ownerId);
+
+    return `users/${folder}/${new Date().toISOString().slice(0, 10)}/${nanoid()}.${extension}`;
+  }
+
+  private storageFolderName(name: string | null | undefined, fallback: string) {
+    const normalized = name
+      ?.trim()
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\p{L}\p{N}._-]+/gu, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 64);
+
+    return normalized || fallback;
   }
 
   private toStorageSetting(
